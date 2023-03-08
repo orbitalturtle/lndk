@@ -21,6 +21,28 @@ async fn main() {
     // We only print it here, note that in real-life code you may want to call `.into_inner()` on
     // the response to get the message.
     println!("{:#?}", info);
+   
+    // UPDATE THIS FOR THE ONION MESSAGE THINGY
+    let update = tonic_lnd::peersrpc::UpdateFeatureAction {
+        action: 0,
+        feature_bit: 38,
+    };
+    let feature_updates = vec![update];
+    let address_updates = vec![];
+
+    // MAYBE WORTH MOVING THIS TO A NEW FUNCTION... LATER
+    let resp = client
+        .peers()
+	.update_node_announcement(tonic_lnd::peersrpc::NodeAnnouncementUpdateRequest {
+	    feature_updates: feature_updates,
+	    color: String::from(""),
+	    alias: String::from(""),
+            address_updates: address_updates,
+	})
+   	.await
+        .expect("failed to update node announcement"); 
+
+    println!("{:#?}", resp);
 }
 
 fn get_lnd_client(cfg: LndCfg) -> Result<Client, ConnectError> {
