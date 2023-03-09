@@ -10,39 +10,9 @@ async fn main() {
         Err(args) => panic!("Bad arguments: {}", args),
     };
 
-    let mut client = get_lnd_client(args).expect("failed to connect");
+    let client = get_lnd_client(args).expect("failed to connect");
 
-    let info = client
-        .lightning()
-        .get_info(tonic_lnd::lnrpc::GetInfoRequest {})
-        .await
-        .expect("failed to get info");
-
-    // We only print it here, note that in real-life code you may want to call `.into_inner()` on
-    // the response to get the message.
-    println!("{:#?}", info);
-   
-    // UPDATE THIS FOR THE ONION MESSAGE THINGY
-    let update = tonic_lnd::peersrpc::UpdateFeatureAction {
-        action: 0,
-        feature_bit: 38,
-    };
-    let feature_updates = vec![update];
-    let address_updates = vec![];
-
-    // MAYBE WORTH MOVING THIS TO A NEW FUNCTION... LATER
-    let resp = client
-        .peers()
-	.update_node_announcement(tonic_lnd::peersrpc::NodeAnnouncementUpdateRequest {
-	    feature_updates: feature_updates,
-	    color: String::from(""),
-	    alias: String::from(""),
-            address_updates: address_updates,
-	})
-   	.await
-        .expect("failed to update node announcement"); 
-
-    println!("{:#?}", resp);
+    set_feature_bit(client).await
 }
 
 fn get_lnd_client(cfg: LndCfg) -> Result<Client, ConnectError> {
@@ -109,4 +79,50 @@ fn parse_args() -> Result<LndCfg, ArgsError> {
     };
 
     Ok(LndCfg::new(address, cert_file, macaroon_file))
+}
+
+/// Sets the onion messaging feature bit (described in this PR: 
+/// https://github.com/lightning/bolts/pull/759/), to signal that we support
+/// onion messaging. This needs to be done every time we start up, because LND
+/// does not currently persist the custom feature bits that are set via the RPC.
+async fn set_feature_bit(mut client: Client) {
+    let update = tonic_lnd::peersrpc::UpdateFeatureAction {
+        action: 0,
+        feature_bit: 38,
+    };
+    let feature_updates = vec![update];
+    let address_updates = vec![];
+
+    let resp = client
+        .peers()
+        .update_node_announcement(tonic_lnd::peersrpc::NodeAnnouncementUpdateRequest {
+            feature_updates: feature_updates,
+            color: String::from(""),
+            alias: String::from(""),
+            address_updates: address_updates,
+        })
+        .await;
+
+    match resp {
+        Ok(_) => {
+	    println!("Now setting the onion messaging feature bit...");
+	},
+        Err(status) => {
+            if !status.message().contains("invalid add action for bit 38, bit is already set") {
+                panic!("error updating node announcement: {:#?}", status) 
+	    }
+	}
+    }
+
+    let info = client
+        .lightning()
+        .get_info(tonic_lnd::lnrpc::GetInfoRequest {})
+        .await
+        .expect("failed to get info");
+
+    if !info.into_inner().features.contains_key(&38) {
+         panic!("onion messaging feature bit failed to be set")
+    }
+
+    println!("Successfully set onion messaging bit");
 }
