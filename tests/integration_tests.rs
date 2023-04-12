@@ -1,7 +1,8 @@
 mod common;
 
-#[test]
-fn test_setup() {
+#[tokio::test]
+async fn test_setup() {
+    println!("MEH");
     // Spin up a Bitcoin node.
-    common::setup_test_infrastructure();
+    common::setup_test_infrastructure().await;
 }
