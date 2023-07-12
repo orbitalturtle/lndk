@@ -16,8 +16,6 @@ use tempfile::{tempdir, Builder, TempDir};
 use tokio::time::Duration;
 use tonic_lnd::Client;
 
-const LND_VERSION: &str = "0.16.2";
-
 // setup_test_infrastructure spins up all of the infrastructure we need to test LNDK, including a bitcoind node and two
 // LND nodes. LNDK can then use this test environment to run.
 //
@@ -124,17 +122,17 @@ pub async fn setup_electrs() -> ElectrsD {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn lnd_download_filename() -> String {
-    format!("lnd-linux-amd64-v{}-beta.tar.gz", &LND_VERSION)
+fn lnd_filename_os() -> String {
+    format!("linux")
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn lnd_download_filename() -> String {
-    format!("lnd-darwin-arm64-v{}-beta.tar.gz", &LND_VERSION)
+fn lnd_filename_os() -> String {
+    format!("darwin", &LND_VERSION)
 }
 
 #[cfg(all(target_os = "windows"))]
-fn lnd_download_filename() -> String {
+fn lnd_filename_os() -> String {
     panic!("Running integration tests on Windows os is not currently supported");
 }
 
@@ -143,9 +141,10 @@ fn lnd_download_filename() -> String {
 pub async fn download_lnd() -> TempDir {
     let temp_dir = tempdir().unwrap();
     let lnd_dir = &temp_dir.path().to_path_buf();
-    let lnd_releases_endpoint =
-        "https://github.com/lightningnetwork/lnd/releases/download/v0.16.2-beta";
-    let lnd_download_endpoint = format!("{lnd_releases_endpoint}/{}", lnd_download_filename());
+    let lnd_download_endpoint = format!(
+        "https://storage.googleapis.com/lnd-binaries/lnd-{}-amd64.tar.gz",
+        lnd_filename_os()
+    );
 
     let resp = minreq::get(&lnd_download_endpoint).send().unwrap();
     assert_eq!(
@@ -178,7 +177,7 @@ impl LndNode {
         lnd_exe_dir: TempDir,
         test_name: String,
     ) -> LndNode {
-        env::set_current_dir(lnd_exe_dir.path().join("lnd-linux-amd64-v0.16.2-beta"))
+        env::set_current_dir(lnd_exe_dir.path())
             .expect("couldn't set current directory");
 
         let lnd_dir_binding = Builder::new().prefix("lnd").tempdir().unwrap();
@@ -227,9 +226,12 @@ impl LndNode {
                 "--bitcoind.rpchost={:?}",
                 bitcoind_connect_params.rpc_socket
             ),
+            format!("--protocol.custom-message=513"),
+            format!("--protocol.custom-nodeann=39"),
+            format!("--protocol.custom-init=39"),
         ];
 
-        let cmd = Command::new("./lnd")
+        let cmd = Command::new(format!("./lnd-{}-amd64", lnd_filename_os()))
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
