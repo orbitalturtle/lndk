@@ -25,14 +25,7 @@ use tonic_lnd::Client;
 // - The "test_name" parameter is required to distinguish the logs coming from different integration tests.
 pub async fn setup_test_infrastructure(
     test_name: String,
-) -> (
-    BitcoinD,
-    LndNode,
-    TempDir,
-    ElectrsD,
-    Node<SqliteStore>,
-    TempDir,
-) {
+) -> (BitcoinD, LndNode, TempDir, ElectrsD, LdkNode) {
     let (bitcoind, bitcoind_dir) = setup_bitcoind().await;
     let lnd_exe_dir = download_lnd().await;
 
@@ -43,16 +36,9 @@ pub async fn setup_test_infrastructure(
     // bitcoin blocks and transactions.
     let electrsd = setup_electrs().await;
     let esplora_url = format!("http://{}", electrsd.esplora_url.as_ref().unwrap());
-    let (ldk_node, ldk_dir) = setup_ldk(esplora_url, test_name).await;
+    let ldk_node = LdkNode::new(esplora_url, test_name);
 
-    return (
-        bitcoind,
-        lnd_node,
-        bitcoind_dir,
-        electrsd,
-        ldk_node,
-        ldk_dir,
-    );
+    return (bitcoind, lnd_node, bitcoind_dir, electrsd, ldk_node);
 }
 
 pub async fn setup_bitcoind() -> (BitcoinD, TempDir) {
@@ -177,8 +163,7 @@ impl LndNode {
         lnd_exe_dir: TempDir,
         test_name: String,
     ) -> LndNode {
-        env::set_current_dir(lnd_exe_dir.path())
-            .expect("couldn't set current directory");
+        env::set_current_dir(lnd_exe_dir.path()).expect("couldn't set current directory");
 
         let lnd_dir_binding = Builder::new().prefix("lnd").tempdir().unwrap();
         let lnd_dir = lnd_dir_binding.path();
@@ -287,31 +272,41 @@ impl LndNode {
     }
 }
 
-// setup_ldk sets up an ldk node.
-async fn setup_ldk(esplora_url: String, test_name: String) -> (Node<SqliteStore>, TempDir) {
-    let mut builder = LdkBuilder::new();
-    builder.set_network(LdkNetwork::Regtest);
-    builder.set_esplora_server(esplora_url);
+// LdkNode holds the tools we need to interact with a Ldk Lightning node.
+pub struct LdkNode {
+    pub node: Node<SqliteStore>,
+    pub dir: TempDir,
+}
 
-    let ldk_dir = tempdir().unwrap();
-    let ldk_dir_path = ldk_dir.path().to_str().unwrap().to_string();
+impl LdkNode {
+    fn new(esplora_url: String, test_name: String) -> LdkNode {
+        let mut builder = LdkBuilder::new();
+        builder.set_network(LdkNetwork::Regtest);
+        builder.set_esplora_server(esplora_url);
 
-    let now_timestamp = Utc::now();
-    let timestamp = now_timestamp.format("%d-%m-%Y-%H-%M");
-    let ldk_log_dir = env::temp_dir().join(format!("ldk_logs"));
-    let ldk_log_dir_path = ldk_log_dir
-        .join(format!("ldk-logs-{test_name}-{timestamp}"))
-        .into_os_string()
-        .into_string()
-        .unwrap();
+        let ldk_dir = tempdir().unwrap();
+        let ldk_dir_path = ldk_dir.path().to_str().unwrap().to_string();
 
-    builder.set_storage_dir_path(ldk_dir_path);
-    builder.set_log_dir_path(ldk_log_dir_path);
+        let now_timestamp = Utc::now();
+        let timestamp = now_timestamp.format("%d-%m-%Y-%H-%M");
+        let ldk_log_dir = env::temp_dir().join(format!("ldk_logs"));
+        let ldk_log_dir_path = ldk_log_dir
+            .join(format!("ldk-logs-{test_name}-{timestamp}"))
+            .into_os_string()
+            .into_string()
+            .unwrap();
 
-    let open_port = bitcoind::get_available_port().unwrap();
-    let listening_addr = NetAddress::from_str(&format!("127.0.0.1:{open_port}")).unwrap();
-    builder.set_listening_address(listening_addr);
+        builder.set_storage_dir_path(ldk_dir_path.clone());
+        builder.set_log_dir_path(ldk_log_dir_path.clone());
 
-    let node = builder.build();
-    (node.unwrap(), ldk_dir)
+        let open_port = bitcoind::get_available_port().unwrap();
+        let listening_addr = NetAddress::from_str(&format!("127.0.0.1:{open_port}")).unwrap();
+        builder.set_listening_address(listening_addr);
+        let node = builder.build();
+
+        LdkNode {
+            node: node.unwrap(),
+            dir: ldk_dir,
+        }
+    }
 }
