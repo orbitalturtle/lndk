@@ -1,5 +1,5 @@
 use bitcoincore_rpc::{bitcoin::Network, json, RpcApi};
-use bitcoind::{BitcoinD, Conf, ConnectParams};
+use bitcoind::{BitcoinD, Conf, ConnectParams, P2P};
 use chrono::Utc;
 use electrsd::ElectrsD;
 use flate2::read::GzDecoder;
@@ -25,7 +25,16 @@ use tonic_lnd::Client;
 // - The "test_name" parameter is required to distinguish the logs coming from different integration tests.
 pub async fn setup_test_infrastructure(
     test_name: String,
-) -> (BitcoinD, LndNode, TempDir, ElectrsD, LdkNode) {
+) -> (
+    BitcoinD,
+    LndNode,
+    TempDir,
+    ElectrsD,
+    TempDir,
+    electrsd::bitcoind::BitcoinD,
+    TempDir,
+    LdkNode,
+) {
     let (bitcoind, bitcoind_dir) = setup_bitcoind().await;
     let lnd_exe_dir = download_lnd().await;
 
@@ -34,11 +43,21 @@ pub async fn setup_test_infrastructure(
 
     // We also need to set up electrs, because that's the way ldk-node (currently) communicates with bitcoind to get
     // bitcoin blocks and transactions.
-    let electrsd = setup_electrs().await;
+    let (electrsd, electrsd_dir, bitcoind_2, bitcoind_2_dir) =
+        setup_electrs(bitcoind.params.p2p_socket.unwrap().to_string()).await;
     let esplora_url = format!("http://{}", electrsd.esplora_url.as_ref().unwrap());
     let ldk_node = LdkNode::new(esplora_url, test_name);
 
-    return (bitcoind, lnd_node, bitcoind_dir, electrsd, ldk_node);
+    return (
+        bitcoind,
+        lnd_node,
+        bitcoind_dir,
+        electrsd,
+        electrsd_dir,
+        bitcoind_2,
+        bitcoind_2_dir,
+        ldk_node,
+    );
 }
 
 pub async fn setup_bitcoind() -> (BitcoinD, TempDir) {
@@ -51,6 +70,7 @@ pub async fn setup_bitcoind() -> (BitcoinD, TempDir) {
         "-zmqpubrawblock=tcp://127.0.0.1:28332",
         "-zmqpubrawtx=tcp://127.0.0.1:28333",
     ];
+    conf.p2p = P2P::Yes;
     let bitcoind = BitcoinD::from_downloaded_with_conf(&conf).unwrap();
 
     // Mine 101 blocks in our little regtest network so that the funds are spendable.
@@ -66,7 +86,11 @@ pub async fn setup_bitcoind() -> (BitcoinD, TempDir) {
 }
 
 // setup_electrs sets up the electrs instance required (for the time being) for us to connect to an LDK node.
-pub async fn setup_electrs() -> ElectrsD {
+pub async fn setup_electrs(
+    node_addr: String,
+) -> (ElectrsD, TempDir, electrsd::bitcoind::BitcoinD, TempDir) {
+    println!("NODE_ADDR: {}", node_addr);
+
     let bitcoind_exe = env::var("BITCOIND_EXE")
         .ok()
         .or_else(|| electrsd::bitcoind::downloaded_exe_path().ok())
@@ -83,6 +107,7 @@ pub async fn setup_electrs() -> ElectrsD {
     let bind_str = format!("-bind=127.0.0.1:{}=onion", port);
     let zmq_block_str = format!("-zmqpubrawblock=tcp://127.0.0.1:{}", zmq_block_port);
     let zmq_tx_str = format!("-zmqpubrawtx=tcp://127.0.0.1:{}", zmq_tx_port);
+    let node_addr = format!("-addnode={}", node_addr);
     bitcoind_conf.tmpdir = Some(bitcoind_dir_path);
     bitcoind_conf.p2p = electrsd::bitcoind::P2P::Yes;
     bitcoind_conf.args = vec![
@@ -92,6 +117,8 @@ pub async fn setup_electrs() -> ElectrsD {
         &bind_str,
         &zmq_block_str,
         &zmq_tx_str,
+        // Connect this new bitcoind node to the first node so they run on the same regtest network.
+        &node_addr,
     ];
     let bitcoind = electrsd::bitcoind::BitcoinD::with_conf(bitcoind_exe, &bitcoind_conf).unwrap();
 
@@ -100,11 +127,15 @@ pub async fn setup_electrs() -> ElectrsD {
     let mut electrsd_conf = electrsd::Conf::default();
     let electrsd_dir = tempdir().unwrap();
     let electrsd_dir_path = electrsd_dir.path().clone().to_path_buf();
-    electrsd_conf.tmpdir = Some(electrsd_dir_path);
+    electrsd_conf.tmpdir = Some(electrsd_dir_path.clone());
     electrsd_conf.http_enabled = true;
     electrsd_conf.network = "regtest";
 
-    ElectrsD::with_conf(electrs_exe, &bitcoind, &electrsd_conf).unwrap()
+    //thread::sleep(time::Duration::from_secs(120));
+
+    let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &electrsd_conf).unwrap();
+
+    (electrsd, electrsd_dir, bitcoind, bitcoind_dir)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
