@@ -85,3 +85,8 @@ pub async fn run() -> Result<(), ()> {
     let mut peers_client = client.lightning().clone();
     run_onion_messenger(peer_support, &mut peers_client, onion_messenger).await
 }
+
+#[cfg(test)]
+mod tests {
+    pub mod test_utils;
+}
