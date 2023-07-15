@@ -1,25 +1,12 @@
 mod clock;
-mod lnd;
+pub mod lnd;
 mod onion_messenger;
 mod rate_limit;
-mod internal {
-    #![allow(clippy::enum_variant_names)]
-    #![allow(clippy::unnecessary_lazy_evaluations)]
-    #![allow(clippy::useless_conversion)]
-    #![allow(clippy::never_loop)]
-    #![allow(clippy::uninlined_format_args)]
-
-    include!(concat!(env!("OUT_DIR"), "/configure_me_config.rs"));
-}
-
-#[macro_use]
-extern crate configure_me;
 
 use crate::lnd::{features_support_onion_messages, get_lnd_client, LndCfg, LndNodeSigner};
 
 use crate::onion_messenger::{run_onion_messenger, MessengerUtilities};
 use bitcoin::secp256k1::PublicKey;
-use internal::*;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::onion_message::OnionMessenger;
 use log::{error, info};
@@ -27,15 +14,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use tonic_lnd::lnrpc::GetInfoRequest;
 
-pub async fn run() -> Result<(), ()> {
-    simple_logger::init_with_level(log::Level::Info).unwrap();
-
-    let lnd_config = Config::including_optional_config_files(&["./lndk.conf"])
-        .unwrap_or_exit()
-        .0;
-
-    let args = LndCfg::new(lnd_config.address, lnd_config.cert, lnd_config.macaroon);
-    let mut client = get_lnd_client(args).expect("failed to connect");
+pub async fn run(cfg: LndCfg) -> Result<(), ()> {
+    let mut client = get_lnd_client(cfg).expect("failed to connect");
 
     let info = client
         .lightning()
