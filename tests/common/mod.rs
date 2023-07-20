@@ -3,16 +3,19 @@ use bitcoind::{BitcoinD, Conf, ConnectParams, P2P};
 use chrono::Utc;
 use electrsd::ElectrsD;
 use flate2::read::GzDecoder;
+use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::bitcoin::Network as LdkNetwork;
 use ldk_node::io::SqliteStore;
 use ldk_node::{Builder as LdkBuilder, NetAddress, Node};
 use std::env;
-use std::fs::File;
+use std::fs::{create_dir_all, File};
 use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
-use std::thread;
+use std::sync::Arc;
+use std::{thread, time};
 use tar::Archive;
 use tempfile::{tempdir, Builder, TempDir};
+use tokio::task;
 use tokio::time::Duration;
 use tonic_lnd::Client;
 
@@ -34,6 +37,7 @@ pub async fn setup_test_infrastructure(
     electrsd::bitcoind::BitcoinD,
     TempDir,
     LdkNode,
+    LdkNode,
 ) {
     let (bitcoind, bitcoind_dir) = setup_bitcoind().await;
     let lnd_exe_dir = download_lnd().await;
@@ -46,7 +50,8 @@ pub async fn setup_test_infrastructure(
     let (electrsd, electrsd_dir, bitcoind_2, bitcoind_2_dir) =
         setup_electrs(bitcoind.params.p2p_socket.unwrap().to_string()).await;
     let esplora_url = format!("http://{}", electrsd.esplora_url.as_ref().unwrap());
-    let ldk_node = LdkNode::new(esplora_url, test_name);
+    let ldk_node = LdkNode::new(esplora_url.clone(), test_name.clone(), 1);
+    let ldk_node_2 = LdkNode::new(esplora_url, test_name, 2);
 
     return (
         bitcoind,
@@ -57,6 +62,7 @@ pub async fn setup_test_infrastructure(
         bitcoind_2,
         bitcoind_2_dir,
         ldk_node,
+        ldk_node_2,
     );
 }
 
@@ -89,8 +95,6 @@ pub async fn setup_bitcoind() -> (BitcoinD, TempDir) {
 pub async fn setup_electrs(
     node_addr: String,
 ) -> (ElectrsD, TempDir, electrsd::bitcoind::BitcoinD, TempDir) {
-    println!("NODE_ADDR: {}", node_addr);
-
     let bitcoind_exe = env::var("BITCOIND_EXE")
         .ok()
         .or_else(|| electrsd::bitcoind::downloaded_exe_path().ok())
@@ -130,8 +134,6 @@ pub async fn setup_electrs(
     electrsd_conf.tmpdir = Some(electrsd_dir_path.clone());
     electrsd_conf.http_enabled = true;
     electrsd_conf.network = "regtest";
-
-    //thread::sleep(time::Duration::from_secs(120));
 
     let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &electrsd_conf).unwrap();
 
@@ -179,11 +181,11 @@ pub async fn download_lnd() -> TempDir {
 
 // LndNode holds the tools we need to interact with a Lightning node.
 pub struct LndNode {
-    address: String,
+    pub address: String,
     _lnd_exe_dir: TempDir,
-    _lnd_dir_tmp: TempDir,
-    cert_path: String,
-    macaroon_path: String,
+    pub lnd_dir_tmp: TempDir,
+    pub cert_path: String,
+    pub macaroon_path: String,
     _handle: Child,
     client: Option<Client>,
 }
@@ -204,6 +206,7 @@ impl LndNode {
         let lnd_log_dir = env::temp_dir().join(format!("lnd_logs"));
         let log_dir_path_buf = lnd_log_dir.join(format!("lnd-logs-{test_name}-{timestamp}"));
         let log_dir = log_dir_path_buf.as_path();
+        create_dir_all(log_dir).unwrap();
         let data_dir = lnd_dir.join("data").to_str().unwrap().to_string();
         let cert_path = lnd_dir.to_str().unwrap().to_string() + "/tls.cert";
         let key_path = lnd_dir.to_str().unwrap().to_string() + "/tls.key";
@@ -227,6 +230,7 @@ impl LndNode {
             format!("--bitcoin.active"),
             format!("--bitcoin.node=bitcoind"),
             format!("--bitcoin.regtest"),
+            format!("--debuglevel=debug"),
             format!("--datadir={}", data_dir),
             format!("--tlscertpath={}", cert_path),
             format!("--tlskeypath={}", key_path),
@@ -257,7 +261,7 @@ impl LndNode {
         LndNode {
             address: format!("https://{}", rpc_addr),
             _lnd_exe_dir: lnd_exe_dir,
-            _lnd_dir_tmp: lnd_dir_binding,
+            lnd_dir_tmp: lnd_dir_binding,
             cert_path: cert_path,
             macaroon_path: macaroon_path,
             _handle: cmd,
@@ -301,6 +305,61 @@ impl LndNode {
             }
         }
     }
+
+    pub async fn new_onchain_address(&mut self) -> String {
+        let addr_req = tonic_lnd::lnrpc::NewAddressRequest {
+            r#type: 0,
+            ..Default::default()
+        };
+
+        let resp = if let Some(ref mut client) = &mut self.client {
+            let resp = client
+                .lightning()
+                .new_address(addr_req)
+                .await
+                .expect("failed to connect peer");
+
+            resp
+        } else {
+            panic!("Client is None");
+        };
+
+        resp.into_inner().address
+    }
+
+    // connect_to_peer connects to the specified peer and opens a channel.
+    pub async fn connect_to_peer(&mut self, node_id: PublicKey, addr: NetAddress) {
+        let ln_addr = tonic_lnd::lnrpc::LightningAddress {
+            pubkey: node_id.to_string(),
+            host: addr.to_string(),
+        };
+
+        let connect_req = tonic_lnd::lnrpc::ConnectPeerRequest {
+            addr: Some(ln_addr),
+            timeout: 20,
+            ..Default::default()
+        };
+
+        println!("WHYYYY: {:?}", connect_req);
+
+        // TODO: Need to get rid of this.
+        thread::sleep(time::Duration::from_secs(2));
+
+        println!("BOUT TO GET CLIENT");
+
+        if let Some(ref mut client) = &mut self.client {
+            println!("GOT CLIENT");
+            let _resp = client
+                .lightning()
+                .connect_peer(connect_req)
+                .await
+                .expect("failed to connect peer");
+        } else {
+            println!("WTF???")
+        }
+
+        println!("CONNECTED TO PEER");
+    }
 }
 
 // LdkNode holds the tools we need to interact with a Ldk Lightning node.
@@ -310,7 +369,7 @@ pub struct LdkNode {
 }
 
 impl LdkNode {
-    fn new(esplora_url: String, test_name: String) -> LdkNode {
+    fn new(esplora_url: String, test_name: String, node_num: u8) -> LdkNode {
         let mut builder = LdkBuilder::new();
         builder.set_network(LdkNetwork::Regtest);
         builder.set_esplora_server(esplora_url);
@@ -322,13 +381,16 @@ impl LdkNode {
         let timestamp = now_timestamp.format("%d-%m-%Y-%H-%M");
         let ldk_log_dir = env::temp_dir().join(format!("ldk_logs"));
         let ldk_log_dir_path = ldk_log_dir
-            .join(format!("ldk-logs-{test_name}-{timestamp}"))
+            .join(format!("ldk-logs-{test_name}-{timestamp}-{node_num}"))
             .into_os_string()
             .into_string()
             .unwrap();
 
+        println!("LDK_DIR_PATH {}", ldk_dir_path);
+
         builder.set_storage_dir_path(ldk_dir_path.clone());
         builder.set_log_dir_path(ldk_log_dir_path.clone());
+        builder.set_log_level(lightning::util::logger::Level::Debug);
 
         let open_port = bitcoind::get_available_port().unwrap();
         let listening_addr = NetAddress::from_str(&format!("127.0.0.1:{open_port}")).unwrap();
@@ -339,5 +401,23 @@ impl LdkNode {
             node: node.unwrap(),
             dir: ldk_dir,
         }
+    }
+
+    pub async fn get_node_info(&self) -> (PublicKey, NetAddress) {
+        let node_id = self.node.node_id();
+        let addr = self.node.listening_address().unwrap();
+        (node_id, addr)
+    }
+
+    // We need to stop the ldk node in this way because otherwise we get an error: "Cannot
+    // drop a runtime in a context where blocking is not allowed. This happens when a runtime is
+    // dropped from within an asynchronous context."
+    pub async fn stop(self: Arc<Self>) {
+        let _res = task::spawn_blocking(move || {
+            let ldk = Arc::clone(&self);
+            ldk.node.stop().unwrap();
+        })
+        .await
+        .unwrap();
     }
 }
