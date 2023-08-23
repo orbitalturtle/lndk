@@ -14,4 +14,3 @@ itest:
 	@$(call print, "Building lnd for itests.")
 	$(GO_BUILD) -tags="peersrpc signrpc dev" -o $(TMPDIR)/lndk-tests/bin/lnd-itest$(EXEC_SUFFIX) $(LND_PKG)/cmd/lnd
 	$(CARGO_TEST) -- -- test '*' --test-threads=1 --nocapture
-
