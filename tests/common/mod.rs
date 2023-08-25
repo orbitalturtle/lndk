@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+
+pub mod ldk_node;
+
 use bitcoincore_rpc::{bitcoin::Network, json, RpcApi};
 use bitcoind::{get_available_port, BitcoinD, Conf};
 use tempfile::{tempdir, TempDir};

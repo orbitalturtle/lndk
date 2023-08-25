@@ -25,9 +25,25 @@ configure_me = "0.4.0"
 bytes = "1.4.0"
 
 [dev-dependencies]
+base64 = "0.13.0"
+bitcoin = "0.29.0"
 bitcoincore-rpc = { package="core-rpc", version = "0.17.0" }
 bitcoind = { version = "0.30.0", features = [ "22_0" ] }
+bech32 = "0.8"
+bitcoin-bech32 = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+hex = "0.3"
+home = "0.5.5"
+libc = "0.2"
+lightning-block-sync = { version = "0.0.116", features = [ "rpc-client" ] }
+lightning-invoice = { version = "0.24.0" }
+lightning-net-tokio = { version = "0.0.116" }
+lightning-persister = { version = "0.0.116" }
+lightning-background-processor = { version = "0.0.116", features = [ "futures" ] }
+lightning-rapid-gossip-sync = { version = "0.0.116" }
 mockall = "0.11.3"
+rand = "0.4"
+serde_json = { version = "1.0" }
 tempfile = "3.5.0"
 
 [build-dependencies]
