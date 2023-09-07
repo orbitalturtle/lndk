@@ -1,22 +1,8 @@
 use crate::common::ldk_node::{hex_utils, PeerManager};
-use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
-use lightning::ln::msgs::NetAddress;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
-
-pub(crate) struct LdkUserInfo {
-    pub(crate) bitcoind_rpc_username: String,
-    pub(crate) bitcoind_rpc_password: String,
-    pub(crate) bitcoind_rpc_port: u16,
-    pub(crate) bitcoind_rpc_host: String,
-    pub(crate) ldk_storage_dir_path: String,
-    pub(crate) ldk_peer_listening_port: u16,
-    pub(crate) ldk_announced_listen_addr: Vec<NetAddress>,
-    pub(crate) ldk_announced_node_name: [u8; 32],
-    pub(crate) network: Network,
-}
 
 pub(crate) fn parse_peer_info(
     peer_pubkey_and_ip_addr: String,

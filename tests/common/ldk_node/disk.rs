@@ -1,4 +1,4 @@
-use crate::common::ldk_node::{cli, NetworkGraph, PaymentInfoStorage};
+use crate::common::ldk_node::{peer_utils, NetworkGraph, PaymentInfoStorage};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
 use chrono::Utc;
@@ -70,7 +70,7 @@ pub(crate) fn read_channel_peer_data(
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     for line in reader.lines() {
-        match cli::parse_peer_info(line.unwrap()) {
+        match peer_utils::parse_peer_info(line.unwrap()) {
             Ok((pubkey, socket_addr)) => {
                 peer_data.insert(pubkey, socket_addr);
             }
