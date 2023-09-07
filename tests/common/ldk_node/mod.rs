@@ -1,4 +1,3 @@
-mod args;
 pub mod bitcoind_client;
 pub mod config;
 mod convert;
@@ -522,19 +521,12 @@ async fn handle_ldk_events(
     }
 }
 
-pub async fn start_ldk() {
-    let args = match args::parse_startup_args() {
-        Ok(user_args) => user_args,
-        Err(()) => return,
-    };
-
-    // Initialize the LDK data directory if necessary.
-    let ldk_data_dir = format!("{}/.ldk", args.ldk_storage_dir_path);
-    fs::create_dir_all(ldk_data_dir.clone()).unwrap();
+pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
+    let (ldk_data_dir, _ldk_dir_binding, ldk_log_dir) = config::setup_data_and_log_dirs(test_name);
 
     // ## Setup
     // Step 1: Initialize the Logger
-    let logger = Arc::new(FilesystemLogger::new(ldk_data_dir.clone()));
+    let logger = Arc::new(FilesystemLogger::new(ldk_log_dir.clone()));
 
     // Initialize our bitcoind client.
     let bitcoind_client = match BitcoindClient::new(

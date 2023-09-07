@@ -17,17 +17,16 @@ pub(crate) const INBOUND_PAYMENTS_FNAME: &str = "inbound_payments";
 pub(crate) const OUTBOUND_PAYMENTS_FNAME: &str = "outbound_payments";
 
 pub(crate) struct FilesystemLogger {
-    data_dir: String,
+    logs_dir: String,
 }
+
 impl FilesystemLogger {
-    pub(crate) fn new(data_dir: String) -> Self {
-        let logs_path = format!("{}/logs", data_dir);
-        fs::create_dir_all(logs_path.clone()).unwrap();
-        Self {
-            data_dir: logs_path,
-        }
+    pub(crate) fn new(logs_dir: String) -> Self {
+        fs::create_dir_all(logs_dir.clone()).unwrap();
+        Self { logs_dir: logs_dir }
     }
 }
+
 impl Logger for FilesystemLogger {
     fn log(&self, record: &Record) {
         let raw_log = record.args.to_string();
@@ -42,7 +41,7 @@ impl Logger for FilesystemLogger {
             record.line,
             raw_log
         );
-        let logs_file_path = format!("{}/logs.txt", self.data_dir.clone());
+        let logs_file_path = format!("{}/logs.txt", self.logs_dir.clone());
         fs::OpenOptions::new()
             .create(true)
             .append(true)
