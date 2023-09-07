@@ -3,6 +3,7 @@ pub mod config;
 mod convert;
 mod disk;
 mod hex_utils;
+pub mod node_api;
 mod peer_utils;
 mod sweep;
 
@@ -521,7 +522,7 @@ async fn handle_ldk_events(
     }
 }
 
-pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
+pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) -> node_api::Node {
     let (ldk_data_dir, _ldk_dir_binding, ldk_log_dir) = config::setup_data_and_log_dirs(test_name);
 
     // ## Setup
@@ -541,8 +542,7 @@ pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
     {
         Ok(client) => Arc::new(client),
         Err(e) => {
-            println!("Failed to connect to bitcoind client: {}", e);
-            return;
+            panic!("Failed to connect to bitcoind client: {}", e);
         }
     };
 
@@ -556,11 +556,10 @@ pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
             bitcoin::Network::Signet => "signet",
         }
     {
-        println!(
+        panic!(
             "Chain argument ({}) didn't match bitcoind chain ({})",
             args.network, bitcoind_chain
         );
-        return;
     }
 
     // Step 2: Initialize the FeeEstimator
@@ -605,11 +604,10 @@ pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
                 f.sync_all().expect("Failed to sync node keys seed to disk");
             }
             Err(e) => {
-                println!(
+                panic!(
                     "ERROR: Unable to create keys seed file {}: {}",
                     keys_seed_path, e
                 );
-                return;
             }
         }
         key
@@ -691,7 +689,7 @@ pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
                 fee_estimator.clone(),
                 chain_monitor.clone(),
                 broadcaster.clone(),
-                router,
+                router.clone(),
                 logger.clone(),
                 user_config,
                 channel_monitor_mut_references,
@@ -711,7 +709,7 @@ pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
                 fee_estimator.clone(),
                 chain_monitor.clone(),
                 broadcaster.clone(),
-                router,
+                router.clone(),
                 logger.clone(),
                 keys_manager.clone(),
                 keys_manager.clone(),
@@ -1023,4 +1021,20 @@ pub(crate) async fn start_ldk(args: config::LdkUserInfo, test_name: &str) {
         Arc::clone(&bitcoind_client),
         Arc::clone(&channel_manager),
     ));
+
+    return node_api::Node {
+        logger,
+        bitcoind_client,
+        persister,
+        chain_monitor,
+        keys_manager,
+        network_graph,
+        router,
+        scorer,
+        channel_manager,
+        gossip_sync,
+        onion_messenger,
+        peer_manager,
+        listening_port: args.ldk_peer_listening_port,
+    };
 }
