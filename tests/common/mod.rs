@@ -35,7 +35,7 @@ pub async fn setup_test_infrastructure(
     let ldk1_config = LdkUserInfo {
         bitcoind_rpc_username: connect_params.0.clone().unwrap(),
         bitcoind_rpc_password: connect_params.1.clone().unwrap(),
-        bitcoind_rpc_host: String::from("localhost"),
+        bitcoind_rpc_host: String::from("127.0.0.1"),
         bitcoind_rpc_port: bitcoind.node.params.rpc_socket.port(),
         ldk_data_dir: ldk_test_dir.clone(),
         ldk_announced_listen_addr: Vec::new(),
@@ -47,7 +47,7 @@ pub async fn setup_test_infrastructure(
     let ldk2_config = LdkUserInfo {
         bitcoind_rpc_username: connect_params.0.unwrap(),
         bitcoind_rpc_password: connect_params.1.unwrap(),
-        bitcoind_rpc_host: String::from("localhost"),
+        bitcoind_rpc_host: String::from("127.0.0.1"),
         bitcoind_rpc_port: bitcoind.node.params.rpc_socket.port(),
         ldk_data_dir: ldk_test_dir,
         ldk_announced_listen_addr: Vec::new(),
@@ -197,8 +197,14 @@ impl LndNode {
             ),
         ];
 
-        // TODO: For Windows we might need to add ".exe" at the end.
-        let cmd = Command::new("./lnd-itest")
+        
+        let lnd_bin = if cfg!(target_os = "windows") {
+            "./lnd-itest.exe"
+        } else {
+            "./lnd-itest"
+        };
+
+        let cmd = Command::new(lnd_bin)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
