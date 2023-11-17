@@ -146,7 +146,7 @@ pub struct LndNode {
     pub cert_path: String,
     pub macaroon_path: String,
     _handle: Child,
-    client: Option<Client>,
+    pub client: Option<Client>,
 }
 
 impl LndNode {
