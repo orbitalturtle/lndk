@@ -8,14 +8,17 @@ mod rate_limit;
 use crate::lnd::{
     features_support_onion_messages, get_lnd_client, string_to_network, LndCfg, LndNodeSigner,
 };
-
+use crate::lndk_offers::{connect_to_peer, create_invoice_request, validate_amount, OfferError};
 use crate::onion_messenger::{run_onion_messenger, MessengerUtilities};
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use home::home_dir;
+use lightning::blinded_path::BlindedPath;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::offers::offer::Offer;
 use lightning::onion_message::{
-    DefaultMessageRouter, OffersMessage, OffersMessageHandler, OnionMessenger, PendingOnionMessage,
+    DefaultMessageRouter, Destination, OffersMessage, OffersMessageHandler, OnionMessenger,
+    PendingOnionMessage,
 };
 use log::{error, info, LevelFilter};
 use log4rs::append::console::ConsoleAppender;
@@ -26,11 +29,14 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Once;
 use std::sync::Mutex;
+use tokio::time::{sleep, Duration};
 use tonic_lnd::lnrpc::GetInfoRequest;
+use tonic_lnd::Client;
 use triggered::{Listener, Trigger};
 
 static INIT: Once = Once::new();
 
+#[derive(Clone)]
 pub struct Cfg {
     pub lnd: LndCfg,
     pub log_dir: Option<String>,
@@ -46,12 +52,8 @@ pub fn init_logger(config: LogConfig) {
     });
 }
 
-pub enum OfferError {
-    OfferAlreadyAdded,
-}
-
 #[allow(dead_code)]
-enum OfferState {
+pub enum OfferState {
     OfferAdded,
     InvoiceRequestSent,
     InvoiceReceived,
@@ -61,7 +63,7 @@ enum OfferState {
 
 pub struct OfferHandler {
     #[allow(dead_code)]
-    active_offers: Mutex<HashMap<Offer, OfferState>>,
+    active_offers: Mutex<HashMap<String, OfferState>>,
     pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
 }
 
@@ -74,12 +76,54 @@ impl OfferHandler {
     }
 
     /// Adds an offer to be paid with the amount specified. May only be called once for a single offer.
-    pub fn pay_offer(&mut self, _offer: Offer, _amount: u64) -> Result<(), OfferError> {
-        /*
-           Check if we've already added offer -> error.
-           Add offer to state map.
-           Create invoice request and push to offer queue.
-        */
+    pub async fn pay_offer(
+        &self,
+        offer: Offer,
+        amount: Option<u64>,
+        network: Network,
+        client: Client,
+        blinded_path: BlindedPath,
+    ) -> Result<(), OfferError<Secp256k1Error>> {
+        sleep(Duration::from_secs(10)).await;
+
+        validate_amount(&offer, amount).await?;
+
+        // For now we connect directly to the introduction node of the blinded path so we don't need any
+        // intermediate nodes here. In the future we'll query for a full path to the introduction node for
+        // better sender privacy.
+        connect_to_peer(
+            client.clone(),
+            blinded_path.introduction_node_id,
+            String::from(""),
+        )
+        .await?;
+
+        let offer_id = offer.clone().to_string();
+        {
+            let mut active_offers = self.active_offers.lock().unwrap();
+            if active_offers.contains_key(&offer_id.clone()) {
+                return Err(OfferError::AlreadyProcessing);
+            }
+            active_offers.insert(offer.to_string().clone(), OfferState::OfferAdded);
+        }
+
+        let invoice_request =
+            create_invoice_request(client.clone(), offer, vec![], network, 20000).await?;
+
+        let contents = OffersMessage::InvoiceRequest(invoice_request);
+        let pending_message = PendingOnionMessage {
+            contents,
+            destination: Destination::BlindedPath(blinded_path),
+            reply_path: None,
+        };
+
+        let mut pending_messages = self.pending_messages.lock().unwrap();
+        pending_messages.push(pending_message);
+        std::mem::drop(pending_messages);
+
+        let mut active_offers = self.active_offers.lock().unwrap();
+        active_offers.insert(offer_id, OfferState::InvoiceRequestSent);
+
         Ok(())
     }
 
@@ -130,6 +174,7 @@ impl OfferHandler {
                 network_str = Some(chain.network.clone())
             }
         }
+
         if network_str.is_none() {
             error!("lnd node is not connected to bitcoin network as expected");
             return Err(());
@@ -197,7 +242,7 @@ impl OffersMessageHandler for OfferHandler {
                 None
             }
             OffersMessage::Invoice(_invoice) => {
-                // lookup corresponding invoice request / fail if not known
+                // TODO: lookup corresponding invoice request / fail if not known
                 // Validate invoice for invoice request
                 // Progress state to invoice received
                 // Dispatch payment and update state
