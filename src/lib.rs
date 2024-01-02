@@ -50,6 +50,7 @@ pub enum OfferError {
     OfferAlreadyAdded,
 }
 
+#[allow(dead_code)]
 enum OfferState {
     OfferAdded,
     InvoiceRequestSent,
@@ -59,6 +60,7 @@ enum OfferState {
 }
 
 pub struct OfferHandler {
+    #[allow(dead_code)]
     active_offers: Mutex<HashMap<Offer, OfferState>>,
     pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
 }
