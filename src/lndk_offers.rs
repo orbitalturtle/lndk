@@ -45,8 +45,8 @@ pub fn decode(offer_str: String) -> Result<Offer, Bolt12ParseError> {
 }
 
 #[allow(dead_code)]
-// create_request_invoice builds and signs an invoice request, the first step in the BOLT 12 process of paying an offer.
-pub(crate) async fn create_request_invoice(
+// create_invoice_request builds and signs an invoice request, the first step in the BOLT 12 process of paying an offer.
+pub(crate) async fn create_invoice_request(
     mut signer: impl MessageSigner + std::marker::Send + 'static,
     offer: Offer,
     metadata: Vec<u8>,
@@ -178,7 +178,7 @@ mod tests {
         let offer = decode(get_offer()).unwrap();
 
         assert!(
-            create_request_invoice(signer_mock, offer, vec![], Network::Regtest, 10000)
+            create_invoice_request(signer_mock, offer, vec![], Network::Regtest, 10000)
                 .await
                 .is_ok()
         )
@@ -202,7 +202,7 @@ mod tests {
         let offer = decode(get_offer()).unwrap();
 
         assert!(
-            create_request_invoice(signer_mock, offer, vec![], Network::Regtest, 10000)
+            create_invoice_request(signer_mock, offer, vec![], Network::Regtest, 10000)
                 .await
                 .is_err()
         )
@@ -226,7 +226,7 @@ mod tests {
         let offer = decode(get_offer()).unwrap();
 
         assert!(
-            create_request_invoice(signer_mock, offer, vec![], Network::Regtest, 10000)
+            create_invoice_request(signer_mock, offer, vec![], Network::Regtest, 10000)
                 .await
                 .is_err()
         )
