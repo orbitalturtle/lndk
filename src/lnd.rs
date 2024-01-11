@@ -29,7 +29,7 @@ pub(crate) fn get_lnd_client(cfg: LndCfg) -> Result<Client, ConnectError> {
 }
 
 /// LndCfg specifies the configuration required to connect to LND's grpc client.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LndCfg {
     address: String,
     cert: PathBuf,

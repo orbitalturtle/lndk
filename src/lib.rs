@@ -73,8 +73,9 @@ impl OfferHandler {
         network: Network,
         client: Client,
         blinded_path: BlindedPath,
+        reply_path: Option<BlindedPath>,
     ) -> Result<(), OfferError<Secp256k1Error>> {
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(5)).await;
 
         validate_amount(&offer, amount).await?;
 
@@ -103,13 +104,15 @@ impl OfferHandler {
         let contents = OffersMessage::InvoiceRequest(invoice_request);
         let pending_message = PendingOnionMessage {
             contents,
-            destination: Destination::BlindedPath(blinded_path),
-            reply_path: None,
+            destination: Destination::BlindedPath(blinded_path.clone()),
+            reply_path: reply_path,
         };
 
         let mut pending_messages = self.pending_messages.lock().unwrap();
         pending_messages.push(pending_message);
         std::mem::drop(pending_messages);
+
+        sleep(Duration::from_secs(10)).await;
 
         let mut active_offers = self.active_offers.lock().unwrap();
         active_offers.insert(offer_id, OfferState::InvoiceRequestSent);
@@ -147,7 +150,7 @@ impl OfferHandler {
             )
             .unwrap();
 
-        let _log_handle = log4rs::init_config(config);
+        let _log_handle = log4rs::init_config(config).unwrap();
 
         let mut client = get_lnd_client(args.lnd).expect("failed to connect");
 
@@ -233,6 +236,11 @@ impl OffersMessageHandler for OfferHandler {
             }
             OffersMessage::Invoice(_invoice) => None,
             OffersMessage::InvoiceError(_error) => None,
+            OffersMessage::Invoice(invoice) => None,
+            OffersMessage::InvoiceError(error) => { 
+                log::error!("Invoice error received: {}", error);
+		None
+            }
         }
     }
 
