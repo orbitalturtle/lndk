@@ -174,3 +174,123 @@ async fn test_lndk_send_invoice_request() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+// Here we test that we're able to fully pay pay an offer.
+async fn test_lndk_pay_offer() {
+    let test_name = "lndk_pay_offer";
+    let (bitcoind, mut lnd, ldk1, ldk2, _lndk_dir) =
+        common::setup_test_infrastructure(test_name).await;
+
+    // Here we'll produce a little network of channels:
+    //
+    // ldk1 <- ldk2 <- lnd
+    //
+    // ldk1 will be the offer creator, which will build a blinded route from ldk2 to ldk1.
+    let (pubkey, addr) = ldk1.get_node_info();
+    let (pubkey_2, addr_2) = ldk2.get_node_info();
+
+    ldk1.connect_to_peer(pubkey_2, addr_2).await.unwrap();
+    lnd.connect_to_peer(pubkey_2, addr_2).await;
+
+    let lnd_info = lnd.get_info().await;
+    let lnd_pubkey = PublicKey::from_str(&lnd_info.identity_pubkey).unwrap();
+
+    // ldk1 won't send back the invoice unless we have channels in our network.
+    let ldk2_fund_addr = ldk2.bitcoind_client.get_new_address().await;
+    let lnd_fund_addr = lnd.new_address().await.address;
+
+    // We need to convert funding addresses to the form that the bitcoincore_rpc library recognizes.
+    let ldk2_addr_string = ldk2_fund_addr.to_string();
+    let ldk2_addr = bitcoind::bitcoincore_rpc::bitcoin::Address::from_str(&ldk2_addr_string)
+        .unwrap()
+        .require_network(RpcNetwork::Regtest)
+        .unwrap();
+    let lnd_addr = bitcoind::bitcoincore_rpc::bitcoin::Address::from_str(&lnd_fund_addr)
+        .unwrap()
+        .require_network(RpcNetwork::Regtest)
+        .unwrap();
+    let lnd_network_addr = lnd
+        .address
+        .replace("localhost", "127.0.0.1")
+        .replace("https://", "");
+
+    // Fund both of these nodes so we can open channels.
+    bitcoind
+        .node
+        .client
+        .generate_to_address(6, &lnd_addr)
+        .unwrap();
+
+    lnd.wait_for_chain_sync().await;
+	
+	ldk2.open_channel(pubkey, addr, 200000, 0, false)
+        .await
+        .unwrap();
+
+    lnd.wait_for_graph_sync().await;
+
+    ldk2.open_channel(
+        lnd_pubkey,
+        SocketAddr::from_str(&lnd_network_addr).unwrap(),
+        200000,
+        0,
+        true,
+    )
+    .await
+    .unwrap();
+
+    lnd.wait_for_graph_sync().await;
+
+    bitcoind
+        .node
+        .client
+        .generate_to_address(6, &ldk2_addr)
+        .unwrap();
+
+    lnd.wait_for_chain_sync().await;
+
+    let path_pubkeys = vec![pubkey_2, pubkey];
+    let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
+    let offer = ldk1
+        .create_offer(
+            &path_pubkeys,
+            Network::Regtest,
+            20_000,
+            Quantity::One,
+            expiration,
+        )
+        .await
+        .expect("should create offer");
+		
+		let mut signer_clone = lnd.client.clone().unwrap();
+    //let signer_client = signer_clone.signer();
+    //let node_signer = LndNodeSigner::new(lnd_pubkey.clone(), signer_client);
+    let messenger_utils = MessengerUtilities::new();
+    let client = lnd.client.clone().unwrap();
+    let blinded_path = offer.paths()[0].clone();
+    let secp_ctx = Secp256k1::new();
+    let reply_path =
+        BlindedPath::new_for_message(&[pubkey_2, lnd_pubkey], &messenger_utils, &secp_ctx).unwrap();
+
+
+
+    //let (res1, res2) = join!(
+    //    wait_for_invoice(client_clone.lightning(), &onion_messenger),
+    //    request_invoice(
+    //        client.clone(),
+    //        &onion_messenger,
+    //        custom_msg_client,
+    //        offer,
+    //        pubkey_2,
+    //        reply_path,
+    //        blinded_path
+    //    )
+    //);
+    //res1.unwrap();
+    //res2.unwrap();
+
+    //// LND should have received the Bolt12Invoice.
+    //let invoices = invoice_handler.invoices.lock().unwrap();
+    //assert!(invoices.len() == 1);
+}
