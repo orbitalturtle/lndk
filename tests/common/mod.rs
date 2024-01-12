@@ -109,7 +109,7 @@ fn setup_test_dirs(test_name: &str) -> (PathBuf, PathBuf, PathBuf) {
 
 // BitcoindNode holds the tools we need to interact with a Bitcoind node.
 pub struct BitcoindNode {
-    node: BitcoinD,
+    pub node: BitcoinD,
     _data_dir: TempDir,
     zmq_block_port: u16,
     zmq_tx_port: u16,
