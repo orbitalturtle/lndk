@@ -14,7 +14,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::{env, fs};
 use tempfile::{tempdir, Builder, TempDir};
-use tokio::time::Duration;
+use tokio::time::{sleep, timeout, Duration};
 use tonic_lnd::lnrpc::GetInfoRequest;
 use tonic_lnd::Client;
 
@@ -202,7 +202,7 @@ impl LndNode {
             format!("--tlscertpath={}", cert_path),
             format!("--tlskeypath={}", key_path),
             format!("--logdir={}", log_dir.display()),
-            format!("--debuglevel=debug,PEER=info"),
+            format!("--debuglevel=info,PEER=info"),
             format!("--bitcoind.rpcuser={}", connect_params.0.unwrap()),
             format!("--bitcoind.rpcpass={}", connect_params.1.unwrap()),
             format!(
@@ -350,5 +350,87 @@ impl LndNode {
         };
 
         resp
+    }
+
+    pub async fn list_channels(&mut self) -> tonic_lnd::lnrpc::ListChannelsResponse {
+        let list_req = tonic_lnd::lnrpc::ListChannelsRequest {
+            ..Default::default()
+        };
+
+        let resp = if let Some(client) = self.client.clone() {
+            let make_request = || async {
+                client
+                    .clone()
+                    .lightning()
+                    .list_channels(list_req.clone())
+                    .await
+            };
+            let resp = test_utils::retry_async(make_request, String::from("list_channels"));
+            resp.await.unwrap()
+        } else {
+            panic!("No client")
+        };
+
+        resp
+    }
+
+    pub async fn list_pending_channels(&mut self) -> tonic_lnd::lnrpc::PendingChannelsResponse {
+        let list_req = tonic_lnd::lnrpc::PendingChannelsRequest {
+            ..Default::default()
+        };
+
+        let resp = if let Some(client) = self.client.clone() {
+            let make_request = || async {
+                client
+                    .clone()
+                    .lightning()
+                    .pending_channels(list_req.clone())
+                    .await
+            };
+            let resp = test_utils::retry_async(make_request, String::from("pending_channels"));
+            resp.await.unwrap()
+        } else {
+            panic!("No client")
+        };
+
+        resp
+    }
+
+    // wait_for_chain_sync waits until we're synced to chain according to the get_info response.
+    // We'll timeout if it takes too long.
+    pub async fn wait_for_chain_sync(&mut self) {
+        match timeout(Duration::from_secs(100), self.check_chain_sync()).await {
+            Err(_) => panic!("timeout before lnd synced to chain"),
+            _ => {}
+        };
+    }
+
+    pub async fn check_chain_sync(&mut self) {
+        loop {
+            let resp = self.get_info().await;
+            if resp.synced_to_chain {
+                return;
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    // wait_for_lnd_sync waits until we're synced to graph according to the get_info response.
+    // We'll timeout if it takes too long.
+    pub async fn wait_for_graph_sync(&mut self) {
+        match timeout(Duration::from_secs(100), self.check_graph_sync()).await {
+            Err(_) => panic!("timeout before lnd synced to graph"),
+            _ => {}
+        };
+    }
+
+    pub async fn check_graph_sync(&mut self) {
+        loop {
+            let resp = self.get_info().await;
+            if resp.synced_to_graph {
+                return;
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
     }
 }

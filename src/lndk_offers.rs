@@ -1,10 +1,11 @@
-use crate::lnd::{MessageSigner, PeerConnector};
+use crate::lnd::{InvoicePayer, MessageSigner, PeerConnector};
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use futures::executor::block_on;
+use lightning::blinded_path::BlindedPath;
 use lightning::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 use lightning::offers::merkle::SignError;
 use lightning::offers::offer::{Amount, Offer};
@@ -12,7 +13,9 @@ use lightning::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 use std::error::Error;
 use std::fmt::Display;
 use tokio::task;
-use tonic_lnd::lnrpc::{ListPeersRequest, ListPeersResponse};
+use tonic_lnd::lnrpc::{
+    HtlcAttempt, ListPeersRequest, ListPeersResponse, QueryRoutesResponse, Route,
+};
 use tonic_lnd::signrpc::{KeyLocator, SignMessageReq};
 use tonic_lnd::tonic::Status;
 use tonic_lnd::Client;
@@ -34,6 +37,10 @@ pub enum OfferError<Secp256k1Error> {
     InvalidCurrency,
     /// Unable to connect to peer.
     PeerConnectError(Status),
+    /// Unable to find or send to payment route.
+    RouteFailure(Status),
+    /// Failure to track payment.
+    TrackPaymentFailure(Status),
 }
 
 impl Display for OfferError<Secp256k1Error> {
@@ -51,6 +58,8 @@ impl Display for OfferError<Secp256k1Error> {
                 "LNDK doesn't yet support offer currencies other than bitcoin"
             ),
             OfferError::PeerConnectError(e) => write!(f, "Error connecting to peer: {e:?}"),
+            OfferError::RouteFailure(e) => write!(f, "Error routing payment: {e:?}"),
+            OfferError::TrackPaymentFailure(e) => write!(f, "Error tracking payment: {e:?}"),
         }
     }
 }
@@ -135,7 +144,6 @@ pub async fn connect_to_peer(
     Ok(())
 }
 
-#[allow(dead_code)]
 // create_invoice_request builds and signs an invoice request, the first step in the BOLT 12 process of paying an offer.
 pub(crate) async fn create_invoice_request(
     mut signer: impl MessageSigner + std::marker::Send + 'static,
@@ -189,6 +197,29 @@ pub(crate) async fn create_invoice_request(
     .unwrap()
 }
 
+// pay_invoice tries to pay the provided invoice.
+pub(crate) async fn pay_invoice(
+    mut payer: impl InvoicePayer + std::marker::Send + 'static,
+    path: BlindedPath,
+    cltv_expiry_delta: u16,
+    fee_base_msat: u32,
+    payment_hash: [u8; 32],
+    msats: u64,
+) -> Result<(), OfferError<Secp256k1Error>> {
+    let resp = payer
+        .query_routes(path, cltv_expiry_delta, fee_base_msat, msats)
+        .await
+        .map_err(OfferError::RouteFailure)?;
+
+    // TODO: If route fails, loop over resp.routes array and try alternatives.
+    let send_resp = payer
+        .send_to_route(payment_hash, resp.routes[0].clone())
+        .await
+        .map_err(OfferError::RouteFailure)?;
+
+    Ok(())
+}
+
 #[async_trait]
 impl PeerConnector for Client {
     async fn list_peers(&mut self) -> Result<ListPeersResponse, Status> {
@@ -238,7 +269,7 @@ impl MessageSigner for Client {
     ) -> Result<Vec<u8>, Status> {
         let tag_vec = tag.as_bytes().to_vec();
         let req = SignMessageReq {
-            msg: merkle_root.as_ref().to_vec(),
+            msg: <bitcoin::hashes::sha256::Hash as AsRef<[u8; 32]>>::as_ref(&merkle_root).to_vec(),
             tag: tag_vec,
             key_loc: Some(key_loc),
             schnorr_sig: true,
@@ -249,6 +280,63 @@ impl MessageSigner for Client {
 
         let resp_inner = resp.into_inner();
         Ok(resp_inner.signature)
+    }
+}
+
+#[async_trait]
+impl InvoicePayer for Client {
+    async fn query_routes(
+        &mut self,
+        path: BlindedPath,
+        cltv_expiry_delta: u16,
+        fee_base_msat: u32,
+        msats: u64,
+    ) -> Result<QueryRoutesResponse, Status> {
+        let mut blinded_hops = vec![];
+        for hop in path.blinded_hops.iter() {
+            let new_hop = tonic_lnd::lnrpc::BlindedHop {
+                blinded_node: hop.blinded_node_id.serialize().to_vec(),
+                encrypted_data: hop.clone().encrypted_payload,
+            };
+            blinded_hops.push(new_hop);
+        }
+
+        let blinded_path = Some(tonic_lnd::lnrpc::BlindedPath {
+            introduction_node: path.introduction_node_id.serialize().to_vec(),
+            blinding_point: path.blinding_point.serialize().to_vec(),
+            blinded_hops: blinded_hops,
+        });
+
+        let blinded_payment_paths = tonic_lnd::lnrpc::BlindedPaymentPath {
+            blinded_path,
+            total_cltv_delta: u32::from(cltv_expiry_delta) + 120,
+            base_fee_msat: u64::from(fee_base_msat),
+            ..Default::default()
+        };
+
+        let query_req = tonic_lnd::lnrpc::QueryRoutesRequest {
+            amt_msat: msats as i64,
+            blinded_payment_paths: vec![blinded_payment_paths],
+            ..Default::default()
+        };
+
+        let resp = self.lightning().query_routes(query_req).await?;
+        Ok(resp.into_inner())
+    }
+
+    async fn send_to_route(
+        &mut self,
+        payment_hash: [u8; 32],
+        route: Route,
+    ) -> Result<HtlcAttempt, Status> {
+        let send_req = tonic_lnd::routerrpc::SendToRouteRequest {
+            payment_hash: payment_hash.to_vec(),
+            route: Some(route),
+            ..Default::default()
+        };
+
+        let resp = self.router().send_to_route_v2(send_req).await?;
+        Ok(resp.into_inner())
     }
 }
 

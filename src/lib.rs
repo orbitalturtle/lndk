@@ -8,18 +8,22 @@ mod rate_limit;
 use crate::lnd::{
     features_support_onion_messages, get_lnd_client, string_to_network, LndCfg, LndNodeSigner,
 };
-use crate::lndk_offers::{connect_to_peer, create_invoice_request, validate_amount, OfferError};
+use crate::lndk_offers::{
+    connect_to_peer, create_invoice_request, pay_invoice, validate_amount, OfferError,
+};
 use crate::onion_messenger::{run_onion_messenger, MessengerUtilities};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use home::home_dir;
 use lightning::blinded_path::BlindedPath;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
+use lightning::offers::invoice::Bolt12Invoice;
 use lightning::offers::offer::Offer;
-use lightning::onion_message::{
-    DefaultMessageRouter, Destination, OffersMessage, OffersMessageHandler, OnionMessenger,
-    PendingOnionMessage,
+use lightning::onion_message::messenger::{
+    DefaultMessageRouter, Destination, OnionMessenger, PendingOnionMessage,
 };
+use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use lightning::routing::gossip::NetworkGraph;
 use log::{error, info, LevelFilter};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
@@ -28,7 +32,7 @@ use log4rs::encode::pattern::PatternEncoder;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Once;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 use tonic_lnd::lnrpc::GetInfoRequest;
 use tonic_lnd::Client;
@@ -62,7 +66,9 @@ pub enum OfferState {
 }
 
 pub struct OfferHandler {
-    active_offers: Mutex<HashMap<String, OfferState>>,
+    active_offers: Mutex<HashMap<String, (OfferState, Option<Bolt12Invoice>)>>,
+    // USE THIS UNTIL WE ACTUALLY HAVE A WAY OF STRINGIFYING THE INVOICES AND OFFERS, ETC
+    active_invoices: Mutex<Vec<Bolt12Invoice>>,
     pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
 }
 
@@ -70,6 +76,7 @@ impl OfferHandler {
     pub fn new() -> Self {
         OfferHandler {
             active_offers: Mutex::new(HashMap::new()),
+            active_invoices: Mutex::new(Vec::new()),
             pending_messages: Mutex::new(Vec::new()),
         }
     }
@@ -104,11 +111,11 @@ impl OfferHandler {
             if active_offers.contains_key(&offer_id.clone()) {
                 return Err(OfferError::AlreadyProcessing);
             }
-            active_offers.insert(offer.to_string().clone(), OfferState::OfferAdded);
+            active_offers.insert(offer.to_string().clone(), (OfferState::OfferAdded, None));
         }
 
         let invoice_request =
-            create_invoice_request(client.clone(), offer, vec![], network, 20000).await?;
+            create_invoice_request(client.clone(), offer, vec![], network, amount.unwrap()).await?;
 
         let contents = OffersMessage::InvoiceRequest(invoice_request);
         let pending_message = PendingOnionMessage {
@@ -121,12 +128,37 @@ impl OfferHandler {
         pending_messages.push(pending_message);
         std::mem::drop(pending_messages);
 
-        sleep(Duration::from_secs(10)).await;
-
         let mut active_offers = self.active_offers.lock().unwrap();
-        active_offers.insert(offer_id, OfferState::InvoiceRequestSent);
+        active_offers.insert(offer_id, (OfferState::InvoiceRequestSent, None));
+
+        let invoice = self.wait_for_invoice().await;
+        let payment_hash = invoice.payment_hash();
+        let path_info = invoice.payment_paths()[0].clone();
+
+        let _ = pay_invoice(
+            client,
+            path_info.1,
+            path_info.0.cltv_expiry_delta,
+            path_info.0.fee_base_msat,
+            payment_hash.0,
+            amount.unwrap(),
+        )
+        .await;
 
         Ok(())
+    }
+
+    // wait_for_invoice waits for the offer creator to respond with an invoice.
+    pub async fn wait_for_invoice(&self) -> Bolt12Invoice {
+        loop {
+            {
+                let mut active_invoices = self.active_invoices.lock().unwrap();
+                if active_invoices.len() == 1 {
+                    return active_invoices.pop().unwrap();
+                }
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
     }
 
     pub async fn run(&self, args: Cfg) -> Result<(), ()> {
@@ -171,6 +203,7 @@ impl OfferHandler {
             .into_inner();
 
         let mut network_str = None;
+        #[allow(deprecated)]
         for chain in info.chains {
             if chain.chain == "bitcoin" {
                 network_str = Some(chain.network.clone())
@@ -182,6 +215,7 @@ impl OfferHandler {
             return Err(());
         }
         let network = string_to_network(&network_str.unwrap());
+        let network = network.unwrap();
 
         let pubkey = PublicKey::from_str(&info.identity_pubkey).unwrap();
         info!("Starting lndk for node: {pubkey}.");
@@ -214,11 +248,13 @@ impl OfferHandler {
         let mut node_client = client.signer().clone();
         let node_signer = LndNodeSigner::new(pubkey, &mut node_client);
         let messenger_utils = MessengerUtilities::new();
+        let network_graph = Arc::new(NetworkGraph::new(network.clone(), &messenger_utils));
+        let message_router = &DefaultMessageRouter::new(network_graph);
         let onion_messenger = OnionMessenger::new(
             &messenger_utils,
             &node_signer,
             &messenger_utils,
-            &DefaultMessageRouter {},
+            message_router,
             self,
             IgnoringMessageHandler {},
         );
@@ -228,7 +264,7 @@ impl OfferHandler {
             peer_support,
             &mut peers_client,
             onion_messenger,
-            network.unwrap(),
+            network,
             args.shutdown,
             args.listener,
         )
@@ -244,19 +280,24 @@ impl OffersMessageHandler for OfferHandler {
                 None
             }
             OffersMessage::Invoice(invoice) => {
-                println!("WE RECEIVED INVOICE RESPONSE!");
+                {
+                    // ONCE WE CAN GET ASSOCIATED OFFER STRING, WE CAN DO THIS...
+                    //let mut active_offers = self.active_offers.lock().unwrap();
+                    //active_offers.insert(offer_id, (OfferState::InvoiceRequestReceived, invoice));
 
-                // PUT THIS LOGIC IN LNDK_OFFERS... SO WE CAN TEST IT. MAYBE MOVE ENTIRE OFFERHANDLER THERE?
-                
+                    let mut active_invoices = self.active_invoices.lock().unwrap();
+                    active_invoices.push(invoice);
+                }
+
                 // TODO: lookup corresponding invoice request / fail if not known
                 // Validate invoice for invoice request
                 // Progress state to invoice received
                 // Dispatch payment and update state
                 None
             }
-            OffersMessage::InvoiceError(error) => { 
+            OffersMessage::InvoiceError(error) => {
                 log::error!("Invoice error received: {}", error);
-		None
+                None
             }
         }
     }
