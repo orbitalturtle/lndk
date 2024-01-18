@@ -22,10 +22,14 @@ async fn main() -> Result<(), ()> {
         .0;
 
     let lnd_args = LndCfg::new(config.address, config.cert, config.macaroon);
+    let (shutdown, listener) = triggered::trigger();
     let args = Cfg {
         lnd: lnd_args,
         log_dir: config.log_dir,
+        shutdown,
+        listener,
     };
 
-    lndk::run(args).await
+    let handler = lndk::OfferHandler::new();
+    handler.run(args).await
 }
