@@ -8,7 +8,7 @@ mod rate_limit;
 use crate::lnd::{
     features_support_onion_messages, get_lnd_client, string_to_network, LndCfg, LndNodeSigner,
 };
-use crate::lndk_offers::{connect_to_peer, create_invoice_request, validate_amount, OfferError};
+use crate::lndk_offers::{connect_to_peer, validate_amount, OfferError};
 use crate::onion_messenger::MessengerUtilities;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
@@ -227,8 +227,9 @@ impl OfferHandler {
             active_offers.insert(offer.to_string().clone(), OfferState::OfferAdded);
         }
 
-        let invoice_request =
-            create_invoice_request(client.clone(), offer, vec![], network, amount.unwrap()).await?;
+        let invoice_request = self
+            .create_invoice_request(client.clone(), offer, vec![], network, amount.unwrap())
+            .await?;
 
         let contents = OffersMessage::InvoiceRequest(invoice_request);
         let pending_message = PendingOnionMessage {
