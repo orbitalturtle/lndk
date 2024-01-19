@@ -85,8 +85,9 @@ async fn test_lndk_forwards_onion_message() {
     };
 
     let handler = lndk::OfferHandler::new();
+    let messenger = lndk::LndkOnionMessenger::new(handler);
     select! {
-        val = handler.run(lndk_cfg) => {
+        val = messenger.run(lndk_cfg) => {
             panic!("lndk should not have completed first {:?}", val);
         },
         // We wait for ldk2 to receive the onion message.
@@ -160,13 +161,14 @@ async fn test_lndk_send_invoice_request() {
         BlindedPath::new_for_message(&[pubkey_2, lnd_pubkey], &messenger_utils, &secp_ctx).unwrap();
 
     // Make sure lndk successfully sends the invoice_request.
-    let handler = &mut lndk::OfferHandler::new();
+    let handler = lndk::OfferHandler::new();
+    let messenger = lndk::LndkOnionMessenger::new(handler);
     select! {
-        val = handler.run(lndk_cfg.clone()) => {
+        val = messenger.run(lndk_cfg.clone()) => {
             panic!("lndk should not have completed first {:?}", val);
         },
         // We wait for ldk2 to receive the onion message.
-        res = handler.pay_offer(offer.clone(), Some(20_000), Network::Regtest, client.clone(), blinded_path.clone(), Some(reply_path)) => {
+        res = messenger.offer_handler.pay_offer(offer.clone(), Some(20_000), Network::Regtest, client.clone(), blinded_path.clone(), Some(reply_path)) => {
             assert!(res.is_ok());
             shutdown.trigger();
             ldk1.stop().await;

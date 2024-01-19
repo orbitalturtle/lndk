@@ -10,7 +10,7 @@ mod internal {
 
 use internal::*;
 use lndk::lnd::LndCfg;
-use lndk::Cfg;
+use lndk::{Cfg, LndkOnionMessenger, OfferHandler};
 
 #[macro_use]
 extern crate configure_me;
@@ -30,6 +30,7 @@ async fn main() -> Result<(), ()> {
         listener,
     };
 
-    let handler = lndk::OfferHandler::new();
-    handler.run(args).await
+    let handler = OfferHandler::new();
+    let messenger = LndkOnionMessenger::new(handler);
+    messenger.run(args).await
 }

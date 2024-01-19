@@ -29,6 +29,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
+use tokio::time::{sleep, Duration};
 use tonic_lnd::lnrpc::GetInfoRequest;
 use tonic_lnd::Client;
 use triggered::{Listener, Trigger};
@@ -51,81 +52,13 @@ pub enum MessengerState {
     Ready,
 }
 
-#[allow(dead_code)]
-pub enum OfferState {
-    OfferAdded,
-    InvoiceRequestSent,
-    InvoiceReceived,
-    InvoicePaymentDispatched,
-    InvoicePaid,
+pub struct LndkOnionMessenger {
+    pub offer_handler: OfferHandler,
 }
 
-pub struct OfferHandler {
-    active_offers: Mutex<HashMap<String, OfferState>>,
-    pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
-    messenger_state: RefCell<MessengerState>,
-}
-
-impl OfferHandler {
-    pub fn new() -> Self {
-        OfferHandler {
-            active_offers: Mutex::new(HashMap::new()),
-            pending_messages: Mutex::new(Vec::new()),
-            messenger_state: RefCell::new(MessengerState::Starting),
-        }
-    }
-
-    /// Adds an offer to be paid with the amount specified. May only be called once for a single offer.
-    pub async fn pay_offer(
-        &self,
-        offer: Offer,
-        amount: Option<u64>,
-        network: Network,
-        client: Client,
-        blinded_path: BlindedPath,
-        reply_path: Option<BlindedPath>,
-    ) -> Result<(), OfferError<Secp256k1Error>> {
-        self.wait_for_ready().await;
-
-        validate_amount(&offer, amount).await?;
-
-        // For now we connect directly to the introduction node of the blinded path so we don't need any
-        // intermediate nodes here. In the future we'll query for a full path to the introduction node for
-        // better sender privacy.
-        connect_to_peer(
-            client.clone(),
-            blinded_path.introduction_node_id,
-            String::from(""),
-        )
-        .await?;
-
-        let offer_id = offer.clone().to_string();
-        {
-            let mut active_offers = self.active_offers.lock().unwrap();
-            if active_offers.contains_key(&offer_id.clone()) {
-                return Err(OfferError::AlreadyProcessing);
-            }
-            active_offers.insert(offer.to_string().clone(), OfferState::OfferAdded);
-        }
-
-        let invoice_request =
-            create_invoice_request(client.clone(), offer, vec![], network, amount.unwrap()).await?;
-
-        let contents = OffersMessage::InvoiceRequest(invoice_request);
-        let pending_message = PendingOnionMessage {
-            contents,
-            destination: Destination::BlindedPath(blinded_path.clone()),
-            reply_path,
-        };
-
-        let mut pending_messages = self.pending_messages.lock().unwrap();
-        pending_messages.push(pending_message);
-        std::mem::drop(pending_messages);
-
-        let mut active_offers = self.active_offers.lock().unwrap();
-        active_offers.insert(offer_id, OfferState::InvoiceRequestSent);
-
-        Ok(())
+impl LndkOnionMessenger {
+    pub fn new(offer_handler: OfferHandler) -> Self {
+        LndkOnionMessenger { offer_handler }
     }
 
     pub async fn run(&self, args: Cfg) -> Result<(), ()> {
@@ -218,7 +151,7 @@ impl OfferHandler {
             &node_signer,
             &messenger_utils,
             &DefaultMessageRouter {},
-            self,
+            &self.offer_handler,
             IgnoringMessageHandler {},
         );
 
@@ -232,6 +165,98 @@ impl OfferHandler {
             args.listener,
         )
         .await
+    }
+}
+
+#[allow(dead_code)]
+pub enum OfferState {
+    OfferAdded,
+    InvoiceRequestSent,
+    InvoiceReceived,
+    InvoicePaymentDispatched,
+    InvoicePaid,
+}
+
+pub struct OfferHandler {
+    active_offers: Mutex<HashMap<String, OfferState>>,
+    pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+    _messenger_utils: MessengerUtilities,
+    messenger_state: RefCell<MessengerState>,
+}
+
+impl OfferHandler {
+    pub fn new() -> Self {
+        OfferHandler {
+            active_offers: Mutex::new(HashMap::new()),
+            pending_messages: Mutex::new(Vec::new()),
+            _messenger_utils: MessengerUtilities::new(),
+            messenger_state: RefCell::new(MessengerState::Starting),
+        }
+    }
+
+    /// Adds an offer to be paid with the amount specified. May only be called once for a single offer.
+    pub async fn pay_offer(
+        &self,
+        offer: Offer,
+        amount: Option<u64>,
+        network: Network,
+        client: Client,
+        blinded_path: BlindedPath,
+        reply_path: Option<BlindedPath>,
+    ) -> Result<(), OfferError<Secp256k1Error>> {
+        self.wait_for_ready().await;
+
+        validate_amount(&offer, amount).await?;
+
+        // For now we connect directly to the introduction node of the blinded path so we don't need any
+        // intermediate nodes here. In the future we'll query for a full path to the introduction node for
+        // better sender privacy.
+        connect_to_peer(
+            client.clone(),
+            blinded_path.introduction_node_id,
+            String::from(""),
+        )
+        .await?;
+
+        let offer_id = offer.clone().to_string();
+        {
+            let mut active_offers = self.active_offers.lock().unwrap();
+            if active_offers.contains_key(&offer_id.clone()) {
+                return Err(OfferError::AlreadyProcessing);
+            }
+            active_offers.insert(offer.to_string().clone(), OfferState::OfferAdded);
+        }
+
+        let invoice_request =
+            create_invoice_request(client.clone(), offer, vec![], network, amount.unwrap()).await?;
+
+        let contents = OffersMessage::InvoiceRequest(invoice_request);
+        let pending_message = PendingOnionMessage {
+            contents,
+            destination: Destination::BlindedPath(blinded_path.clone()),
+            reply_path,
+        };
+
+        let mut pending_messages = self.pending_messages.lock().unwrap();
+        pending_messages.push(pending_message);
+        std::mem::drop(pending_messages);
+
+        let mut active_offers = self.active_offers.lock().unwrap();
+        active_offers.insert(offer_id, OfferState::InvoiceRequestSent);
+
+        Ok(())
+    }
+
+    /// wait_for_ready waits for our onion messenger to finish starting up.
+    pub(crate) async fn wait_for_ready(&self) {
+        loop {
+            sleep(Duration::from_secs(2)).await;
+
+            match *self.messenger_state.borrow() {
+                MessengerState::Starting => continue,
+                MessengerState::Ready => break,
+            };
+        }
     }
 }
 
