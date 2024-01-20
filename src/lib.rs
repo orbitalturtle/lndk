@@ -14,12 +14,14 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use home::home_dir;
 use lightning::blinded_path::BlindedPath;
+use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::offers::offer::Offer;
 use lightning::onion_message::{
     DefaultMessageRouter, Destination, OffersMessage, OffersMessageHandler, OnionMessenger,
     PendingOnionMessage,
 };
+use lightning::sign::{EntropySource, KeyMaterial};
 use log::{error, info, LevelFilter};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
@@ -180,17 +182,23 @@ pub enum OfferState {
 pub struct OfferHandler {
     active_offers: Mutex<HashMap<String, OfferState>>,
     pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
-    _messenger_utils: MessengerUtilities,
+    messenger_utils: MessengerUtilities,
     messenger_state: RefCell<MessengerState>,
+    expanded_key: ExpandedKey,
 }
 
 impl OfferHandler {
     pub fn new() -> Self {
+        let messenger_utils = MessengerUtilities::new();
+        let random_bytes = messenger_utils.get_secure_random_bytes();
+        let expanded_key = ExpandedKey::new(&KeyMaterial(random_bytes));
+
         OfferHandler {
             active_offers: Mutex::new(HashMap::new()),
             pending_messages: Mutex::new(Vec::new()),
-            _messenger_utils: MessengerUtilities::new(),
+            messenger_utils: MessengerUtilities::new(),
             messenger_state: RefCell::new(MessengerState::Starting),
+            expanded_key,
         }
     }
 
