@@ -11,11 +11,12 @@ use crate::lnd::{
 use crate::lndk_offers::{connect_to_peer, validate_amount, OfferError};
 use crate::onion_messenger::MessengerUtilities;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
+use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey, Secp256k1};
 use home::home_dir;
 use lightning::blinded_path::BlindedPath;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
+use lightning::offers::invoice_error::InvoiceError;
 use lightning::offers::offer::Offer;
 use lightning::onion_message::{
     DefaultMessageRouter, Destination, OffersMessage, OffersMessageHandler, OnionMessenger,
@@ -236,7 +237,13 @@ impl OfferHandler {
         }
 
         let invoice_request = self
-            .create_invoice_request(client.clone(), offer, vec![], network, amount.unwrap())
+            .create_invoice_request(
+                client.clone(),
+                offer.clone(),
+                vec![],
+                network,
+                amount.unwrap(),
+            )
             .await?;
 
         let contents = OffersMessage::InvoiceRequest(invoice_request);
@@ -251,7 +258,7 @@ impl OfferHandler {
         std::mem::drop(pending_messages);
 
         let mut active_offers = self.active_offers.lock().unwrap();
-        active_offers.insert(offer_id, OfferState::InvoiceRequestSent);
+        active_offers.insert(offer.to_string().clone(), OfferState::InvoiceRequestSent);
 
         Ok(())
     }
@@ -276,7 +283,17 @@ impl OffersMessageHandler for OfferHandler {
                 log::error!("Invoice request received, payment not yet supported.");
                 None
             }
-            OffersMessage::Invoice(_invoice) => None,
+            OffersMessage::Invoice(invoice) => {
+                let secp_ctx = &Secp256k1::new();
+                match invoice.verify(&self.expanded_key, secp_ctx) {
+                    // TODO: Eventually we can use the returned payment id below to check if this
+                    // payment has been sent twice.
+                    Ok(_payment_id) => Some(OffersMessage::Invoice(invoice)),
+                    Err(()) => Some(OffersMessage::InvoiceError(InvoiceError::from_string(
+                        String::from("invoice verification failure"),
+                    ))),
+                }
+            }
             OffersMessage::InvoiceError(_error) => None,
         }
     }

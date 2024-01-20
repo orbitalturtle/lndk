@@ -947,7 +947,7 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 [[package]]
 name = "ldk-sample"
 version = "0.1.0"
-source = "git+https://github.com/lndk-org/ldk-sample?branch=offers#848e562f0ef57c95e015454cc2c00bca1e315e29"
+source = "git+https://github.com/lndk-org/ldk-sample?branch=offer-handling#add68adc8f3c728eea82860015c866275d4c9b02"
 dependencies = [
  "base64 0.13.1",
  "bech32 0.8.1",
