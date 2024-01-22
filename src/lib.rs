@@ -25,10 +25,10 @@ use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
 use log4rs::config::{Appender, Config as LogConfig, Root};
 use log4rs::encode::pattern::PatternEncoder;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Mutex;
-use tokio::time::{sleep, Duration};
 use tonic_lnd::lnrpc::GetInfoRequest;
 use tonic_lnd::Client;
 use triggered::{Listener, Trigger};
@@ -43,6 +43,14 @@ pub struct Cfg {
     pub listener: Listener,
 }
 
+// MessengerState tells us whether our onion messenger is still starting up is ready to start
+// forwarding messages.
+#[derive(Debug)]
+pub enum MessengerState {
+    Starting,
+    Ready,
+}
+
 #[allow(dead_code)]
 pub enum OfferState {
     OfferAdded,
@@ -55,6 +63,7 @@ pub enum OfferState {
 pub struct OfferHandler {
     active_offers: Mutex<HashMap<String, OfferState>>,
     pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+    messenger_state: RefCell<MessengerState>,
 }
 
 impl OfferHandler {
@@ -62,6 +71,7 @@ impl OfferHandler {
         OfferHandler {
             active_offers: Mutex::new(HashMap::new()),
             pending_messages: Mutex::new(Vec::new()),
+            messenger_state: RefCell::new(MessengerState::Starting),
         }
     }
 
@@ -75,7 +85,7 @@ impl OfferHandler {
         blinded_path: BlindedPath,
         reply_path: Option<BlindedPath>,
     ) -> Result<(), OfferError<Secp256k1Error>> {
-        sleep(Duration::from_secs(5)).await;
+        self.wait_for_ready().await;
 
         validate_amount(&offer, amount).await?;
 

@@ -1,7 +1,7 @@
 use crate::clock::TokioClock;
 use crate::lnd::{features_support_onion_messages, ONION_MESSAGES_OPTIONAL};
 use crate::rate_limit::{RateLimiter, TokenLimiter};
-use crate::OfferHandler;
+use crate::{MessengerState, OfferHandler};
 use async_trait::async_trait;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
@@ -27,7 +27,7 @@ use std::io::Cursor;
 use std::marker::Copy;
 use std::str::FromStr;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::{select, time, time::Duration, time::Interval};
+use tokio::{select, time, time::sleep, time::Duration, time::Interval};
 use tonic_lnd::{
     lnrpc::peer_event::EventType::PeerOffline, lnrpc::peer_event::EventType::PeerOnline,
     lnrpc::CustomMessage, lnrpc::PeerEvent, lnrpc::SendCustomMessageRequest,
@@ -216,6 +216,7 @@ impl OfferHandler {
             }
         });
 
+        self.messenger_state.replace(MessengerState::Ready);
 
         // Consume events is our main controlling loop, so we run it inline here. We use a RefCell in onion_messenger to
         // allow interior mutability (see LndNodeSigner) so this function can't safely be passed off to another thread.
@@ -265,7 +266,17 @@ impl OfferHandler {
         Ok(())
     }
 
-    Ok(())
+    /// wait_for_ready waits for our onion messenger to finish starting up.
+    pub(crate) async fn wait_for_ready(&self) {
+        loop {
+            sleep(Duration::from_secs(2)).await;
+
+            match *self.messenger_state.borrow() {
+                MessengerState::Starting => continue,
+                MessengerState::Ready => break,
+            };
+        }
+    }
 }
 
 /// lookup_onion_support performs a best-effort lookup in the node's list of current peers to determine whether it
