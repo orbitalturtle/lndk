@@ -254,7 +254,7 @@ impl MessageSigner for Client {
     ) -> Result<Vec<u8>, Status> {
         let tag_vec = tag.as_bytes().to_vec();
         let req = SignMessageReq {
-            msg: merkle_root.as_ref().to_vec(),
+            msg: <bitcoin::hashes::sha256::Hash as AsRef<[u8; 32]>>::as_ref(&merkle_root).to_vec(),
             tag: tag_vec,
             key_loc: Some(key_loc),
             schnorr_sig: true,

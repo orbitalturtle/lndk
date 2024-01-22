@@ -3,11 +3,14 @@ use lndk;
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Network;
+use bitcoincore_rpc::bitcoin::Network as RpcNetwork;
+use bitcoincore_rpc::RpcApi;
 use chrono::Utc;
 use ldk_sample::node_api::Node as LdkNode;
 use lightning::blinded_path::BlindedPath;
 use lightning::offers::offer::Quantity;
 use lndk::onion_messenger::MessengerUtilities;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -47,7 +50,7 @@ async fn check_for_message(ldk: LdkNode) -> LdkNode {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_lndk_forwards_onion_message() {
     let test_name = "lndk_forwards_onion_message";
-    let (_bitcoind, mut lnd, ldk1, ldk2, lndk_dir) =
+    let (bitcoind, mut lnd, ldk1, ldk2, lndk_dir) =
         common::setup_test_infrastructure(test_name).await;
 
     // Here we'll produce a little path of two channels. Both ldk nodes are connected to lnd like so:
@@ -57,9 +60,64 @@ async fn test_lndk_forwards_onion_message() {
     // Notice that ldk1 and ldk2 are not connected directly to each other.
     let (pubkey, addr) = ldk1.get_node_info();
     let (pubkey_2, addr_2) = ldk2.get_node_info();
+
     lnd.connect_to_peer(pubkey, addr).await;
     lnd.connect_to_peer(pubkey_2, addr_2).await;
     let lnd_info = lnd.get_info().await;
+    let lnd_pubkey = PublicKey::from_str(&lnd_info.identity_pubkey).unwrap();
+
+    let ldk2_fund_addr = ldk2.bitcoind_client.get_new_address().await;
+    let lnd_fund_addr = lnd.new_address().await.address;
+
+    // We need to convert funding addresses to the form that the bitcoincore_rpc library recognizes.
+    let ldk2_addr_string = ldk2_fund_addr.to_string();
+    let ldk2_addr = bitcoind::bitcoincore_rpc::bitcoin::Address::from_str(&ldk2_addr_string)
+        .unwrap()
+        .require_network(RpcNetwork::Regtest)
+        .unwrap();
+    let lnd_addr = bitcoind::bitcoincore_rpc::bitcoin::Address::from_str(&lnd_fund_addr)
+        .unwrap()
+        .require_network(RpcNetwork::Regtest)
+        .unwrap();
+    let lnd_network_addr = lnd
+        .address
+        .replace("localhost", "127.0.0.1")
+        .replace("https://", "");
+
+    // Fund both of these nodes, open the channels, and synchronize the network.
+    bitcoind
+        .node
+        .client
+        .generate_to_address(6, &lnd_addr)
+        .unwrap();
+
+    lnd.wait_for_chain_sync().await;
+
+    ldk2.open_channel(pubkey, addr, 200000, 0, false)
+        .await
+        .unwrap();
+
+    lnd.wait_for_graph_sync().await;
+
+    ldk2.open_channel(
+        lnd_pubkey,
+        SocketAddr::from_str(&lnd_network_addr).unwrap(),
+        200000,
+        10000000,
+        true,
+    )
+    .await
+    .unwrap();
+
+    lnd.wait_for_graph_sync().await;
+
+    bitcoind
+        .node
+        .client
+        .generate_to_address(20, &ldk2_addr)
+        .unwrap();
+
+    lnd.wait_for_chain_sync().await;
 
     // Now we'll spin up lndk. Even though ldk1 and ldk2 are not directly connected, we'll show that lndk
     // successfully helps lnd forward the onion message from ldk1 to ldk2.
