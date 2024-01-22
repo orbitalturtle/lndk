@@ -1,4 +1,4 @@
-use crate::lnd::{MessageSigner, PeerConnector};
+use crate::lnd::{InvoicePayer, MessageSigner, PeerConnector};
 use crate::OfferHandler;
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
@@ -15,7 +15,9 @@ use lightning::sign::EntropySource;
 use std::error::Error;
 use std::fmt::Display;
 use tokio::task;
-use tonic_lnd::lnrpc::{ListPeersRequest, ListPeersResponse};
+use tonic_lnd::lnrpc::{
+    HtlcAttempt, ListPeersRequest, ListPeersResponse, QueryRoutesResponse, Route,
+};
 use tonic_lnd::signrpc::{KeyLocator, SignMessageReq};
 use tonic_lnd::tonic::Status;
 use tonic_lnd::Client;
@@ -37,6 +39,8 @@ pub enum OfferError<Secp256k1Error> {
     InvalidCurrency,
     /// Unable to connect to peer.
     PeerConnectError(Status),
+    /// Unable to find or send to payment route.
+    RouteFailure(Status),
 }
 
 impl Display for OfferError<Secp256k1Error> {
@@ -54,6 +58,7 @@ impl Display for OfferError<Secp256k1Error> {
                 "LNDK doesn't yet support offer currencies other than bitcoin"
             ),
             OfferError::PeerConnectError(e) => write!(f, "Error connecting to peer: {e:?}"),
+            OfferError::RouteFailure(e) => write!(f, "Error routing payment: {e:?}"),
         }
     }
 }
@@ -205,6 +210,29 @@ impl OfferHandler {
     }
 }
 
+// pay_invoice tries to pay the provided invoice.
+pub(crate) async fn pay_invoice(
+    mut payer: impl InvoicePayer + std::marker::Send + 'static,
+    path: BlindedPath,
+    cltv_expiry_delta: u16,
+    fee_base_msat: u32,
+    payment_hash: [u8; 32],
+    msats: u64,
+) -> Result<(), OfferError<Secp256k1Error>> {
+    let resp = payer
+        .query_routes(path, cltv_expiry_delta, fee_base_msat, msats)
+        .await
+        .map_err(OfferError::RouteFailure)?;
+
+    // TODO: If route fails, loop over resp.routes array and try alternatives.
+    let _send_resp = payer
+        .send_to_route(payment_hash, resp.routes[0].clone())
+        .await
+        .map_err(OfferError::RouteFailure)?;
+
+    Ok(())
+}
+
 #[async_trait]
 impl PeerConnector for Client {
     async fn list_peers(&mut self) -> Result<ListPeersResponse, Status> {
@@ -268,9 +296,67 @@ impl MessageSigner for Client {
     }
 }
 
+#[async_trait]
+impl InvoicePayer for Client {
+    async fn query_routes(
+        &mut self,
+        path: BlindedPath,
+        cltv_expiry_delta: u16,
+        fee_base_msat: u32,
+        msats: u64,
+    ) -> Result<QueryRoutesResponse, Status> {
+        let mut blinded_hops = vec![];
+        for hop in path.blinded_hops.iter() {
+            let new_hop = tonic_lnd::lnrpc::BlindedHop {
+                blinded_node: hop.blinded_node_id.serialize().to_vec(),
+                encrypted_data: hop.clone().encrypted_payload,
+            };
+            blinded_hops.push(new_hop);
+        }
+
+        let blinded_path = Some(tonic_lnd::lnrpc::BlindedPath {
+            introduction_node: path.introduction_node_id.serialize().to_vec(),
+            blinding_point: path.blinding_point.serialize().to_vec(),
+            blinded_hops,
+        });
+
+        let blinded_payment_paths = tonic_lnd::lnrpc::BlindedPaymentPath {
+            blinded_path,
+            total_cltv_delta: u32::from(cltv_expiry_delta) + 120,
+            base_fee_msat: u64::from(fee_base_msat),
+            ..Default::default()
+        };
+
+        let query_req = tonic_lnd::lnrpc::QueryRoutesRequest {
+            amt_msat: msats as i64,
+            blinded_payment_paths: vec![blinded_payment_paths],
+            ..Default::default()
+        };
+
+        let resp = self.lightning().query_routes(query_req).await?;
+        Ok(resp.into_inner())
+    }
+
+    async fn send_to_route(
+        &mut self,
+        payment_hash: [u8; 32],
+        route: Route,
+    ) -> Result<HtlcAttempt, Status> {
+        let send_req = tonic_lnd::routerrpc::SendToRouteRequest {
+            payment_hash: payment_hash.to_vec(),
+            route: Some(route),
+            ..Default::default()
+        };
+
+        let resp = self.router().send_to_route_v2(send_req).await?;
+        Ok(resp.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MessengerUtilities;
     use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
     use lightning::offers::offer::{OfferBuilder, Quantity};
     use mockall::mock;
@@ -304,6 +390,17 @@ mod tests {
         "28b937976a29c15827433086440b36c2bec6ca5bd977557972dca8641cd59ffba50daafb8ee99a19c950976b46f47d9e7aa716652e5657dfc555b82eff467f18".to_string()
     }
 
+    fn get_blinded_path() -> BlindedPath {
+        let entropy_source = MessengerUtilities::new();
+        let secp_ctx = Secp256k1::new();
+        BlindedPath::new_for_message(
+            &[PublicKey::from_str(&get_pubkey()).unwrap()],
+            &entropy_source,
+            &secp_ctx,
+        )
+        .unwrap()
+    }
+
     mock! {
         TestBolt12Signer{}
 
@@ -322,6 +419,16 @@ mod tests {
              async fn list_peers(&mut self) -> Result<ListPeersResponse, Status>;
              async fn connect_peer(&mut self, node_id: String, addr: String) -> Result<(), Status>;
          }
+    }
+
+    mock! {
+    TestInvoicePayer{}
+
+        #[async_trait]
+        impl InvoicePayer for TestInvoicePayer{
+            async fn query_routes(&mut self, path: BlindedPath, cltv_expiry_delta: u16, fee_base_msat: u32, msats: u64) -> Result<QueryRoutesResponse, Status>;
+            async fn send_to_route(&mut self, payment_hash: [u8; 32], route: Route) -> Result<HtlcAttempt, Status>;
+        }
     }
 
     #[tokio::test]
@@ -481,6 +588,82 @@ mod tests {
         let pubkey = PublicKey::from_str(&get_pubkey()).unwrap();
         assert!(
             connect_to_peer(connector_mock, pubkey, String::from("127.0.0.1"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_invoice() {
+        let mut payer_mock = MockTestInvoicePayer::new();
+
+        payer_mock.expect_query_routes().returning(|_, _, _, _| {
+            let route = Route {
+                ..Default::default()
+            };
+            Ok(QueryRoutesResponse {
+                routes: vec![route],
+                ..Default::default()
+            })
+        });
+
+        payer_mock.expect_send_to_route().returning(|_, _| {
+            Ok(HtlcAttempt {
+                ..Default::default()
+            })
+        });
+
+        let blinded_path = get_blinded_path();
+        let payment_hash = MessengerUtilities::new().get_secure_random_bytes();
+        assert!(
+            pay_invoice(payer_mock, blinded_path, 200, 1, payment_hash, 2000)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_invoice_query_error() {
+        let mut payer_mock = MockTestInvoicePayer::new();
+
+        payer_mock.expect_query_routes().returning(|_, _, _, _| {
+            let route = Route {
+                ..Default::default()
+            };
+            Err(Status::unknown("unknown error"))
+        });
+
+        let blinded_path = get_blinded_path();
+        let payment_hash = MessengerUtilities::new().get_secure_random_bytes();
+        assert!(
+            pay_invoice(payer_mock, blinded_path, 200, 1, payment_hash, 2000)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_invoice_send_error() {
+        let mut payer_mock = MockTestInvoicePayer::new();
+
+        payer_mock.expect_query_routes().returning(|_, _, _, _| {
+            let route = Route {
+                ..Default::default()
+            };
+            Ok(QueryRoutesResponse {
+                routes: vec![route],
+                ..Default::default()
+            })
+        });
+
+        payer_mock
+            .expect_send_to_route()
+            .returning(|_, _| Err(Status::unknown("unknown error")));
+
+        let blinded_path = get_blinded_path();
+        let payment_hash = MessengerUtilities::new().get_secure_random_bytes();
+        assert!(
+            pay_invoice(payer_mock, blinded_path, 200, 1, payment_hash, 2000)
                 .await
                 .is_err()
         );
