@@ -9,7 +9,7 @@ use crate::lnd::{
     features_support_onion_messages, get_lnd_client, string_to_network, LndCfg, LndNodeSigner,
 };
 use crate::lndk_offers::{connect_to_peer, create_invoice_request, validate_amount, OfferError};
-use crate::onion_messenger::{run_onion_messenger, MessengerUtilities};
+use crate::onion_messenger::MessengerUtilities;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use home::home_dir;
@@ -213,7 +213,7 @@ impl OfferHandler {
         );
 
         let mut peers_client = client.lightning().clone();
-        run_onion_messenger(
+        self.run_onion_messenger(
             peer_support,
             &mut peers_client,
             onion_messenger,
