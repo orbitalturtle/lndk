@@ -8,7 +8,7 @@ mod rate_limit;
 use crate::lnd::{
     features_support_onion_messages, get_lnd_client, string_to_network, LndCfg, LndNodeSigner,
 };
-use crate::lndk_offers::{connect_to_peer, validate_amount, OfferError};
+use crate::lndk_offers::{connect_to_peer, pay_invoice, validate_amount, OfferError};
 use crate::onion_messenger::MessengerUtilities;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey, Secp256k1};
@@ -16,6 +16,7 @@ use home::home_dir;
 use lightning::blinded_path::BlindedPath;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
+use lightning::offers::invoice::Bolt12Invoice;
 use lightning::offers::invoice_error::InvoiceError;
 use lightning::offers::offer::Offer;
 use lightning::onion_message::messenger::{
@@ -187,6 +188,7 @@ pub enum OfferState {
 
 pub struct OfferHandler {
     active_offers: Mutex<HashMap<String, OfferState>>,
+    active_invoices: Mutex<Vec<Bolt12Invoice>>,
     pending_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
     messenger_utils: MessengerUtilities,
     messenger_state: RefCell<MessengerState>,
@@ -201,6 +203,7 @@ impl OfferHandler {
 
         OfferHandler {
             active_offers: Mutex::new(HashMap::new()),
+            active_invoices: Mutex::new(Vec::new()),
             pending_messages: Mutex::new(Vec::new()),
             messenger_utils: MessengerUtilities::new(),
             messenger_state: RefCell::new(MessengerState::Starting),
@@ -258,12 +261,27 @@ impl OfferHandler {
             reply_path,
         };
 
-        let mut pending_messages = self.pending_messages.lock().unwrap();
-        pending_messages.push(pending_message);
-        std::mem::drop(pending_messages);
+        {
+            let mut pending_messages = self.pending_messages.lock().unwrap();
+            pending_messages.push(pending_message);
 
-        let mut active_offers = self.active_offers.lock().unwrap();
-        active_offers.insert(offer.to_string().clone(), OfferState::InvoiceRequestSent);
+            let mut active_offers = self.active_offers.lock().unwrap();
+            active_offers.insert(offer.to_string().clone(), OfferState::InvoiceRequestSent);
+        }
+
+        let invoice = self.wait_for_invoice().await;
+        let payment_hash = invoice.payment_hash();
+        let path_info = invoice.payment_paths()[0].clone();
+
+        let _ = pay_invoice(
+            client,
+            path_info.1,
+            path_info.0.cltv_expiry_delta,
+            path_info.0.fee_base_msat,
+            payment_hash.0,
+            amount.unwrap(),
+        )
+        .await;
 
         Ok(())
     }
@@ -277,6 +295,19 @@ impl OfferHandler {
                 MessengerState::Starting => continue,
                 MessengerState::Ready => break,
             };
+        }
+    }
+
+    // wait_for_invoice waits for the offer creator to respond with an invoice.
+    pub async fn wait_for_invoice(&self) -> Bolt12Invoice {
+        loop {
+            {
+                let mut active_invoices = self.active_invoices.lock().unwrap();
+                if active_invoices.len() == 1 {
+                    return active_invoices.pop().unwrap();
+                }
+            }
+            sleep(Duration::from_secs(2)).await;
         }
     }
 }
@@ -293,13 +324,20 @@ impl OffersMessageHandler for OfferHandler {
                 match invoice.verify(&self.expanded_key, secp_ctx) {
                     // TODO: Eventually we can use the returned payment id below to check if this
                     // payment has been sent twice.
-                    Ok(_payment_id) => Some(OffersMessage::Invoice(invoice)),
+                    Ok(_payment_id) => {
+                        let mut active_invoices = self.active_invoices.lock().unwrap();
+                        active_invoices.push(invoice.clone());
+                        Some(OffersMessage::Invoice(invoice))
+                    }
                     Err(()) => Some(OffersMessage::InvoiceError(InvoiceError::from_string(
                         String::from("invoice verification failure"),
                     ))),
                 }
             }
-            OffersMessage::InvoiceError(_error) => None,
+            OffersMessage::InvoiceError(error) => {
+                log::error!("Invoice error received: {}", error);
+                None
+            }
         }
     }
 

@@ -6,6 +6,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use futures::executor::block_on;
+use lightning::blinded_path::BlindedPath;
 use lightning::ln::channelmanager::PaymentId;
 use lightning::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 use lightning::offers::merkle::SignError;
