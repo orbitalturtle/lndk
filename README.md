@@ -29,9 +29,9 @@ cd lnd
 git checkout v0.16.2-patch-customfeatures
 ```
 
-While on this branch, compile `LND`. Make sure that the peersrpc and signerrpc services and dev tag are enabled, like this:
+While on this branch, compile `LND`. Make sure that the peersrpc, signerrpc, and walletrpc services and the dev tag are all enabled, like this:
 
-`make install tags="peersrpc signrpc dev"`
+`make install tags="peersrpc signrpc walletrpc dev"`
 
 Note that this guide assumes some familiarity with setting up `LND`. If you're looking to get up to speed, try [this guide](https://docs.lightning.engineering/lightning-network-tools/lnd/run-lnd).
 
@@ -90,7 +90,7 @@ Or in a more concrete example:
 Rather than use the admin.macaroon with unrestricted permission to an `LND` node, we can bake a macaroon using lncli with much more specific permissions for better security. With this command, generate a macaroon which will give `LNDK` only the specific grpc endpoints it's designed to hit:
 
 ```
-lncli --save_to=<FILEPATH>/lndk.macaroon uri:/lnrpc.Lightning/GetInfo uri:/lnrpc.Lightning/ListPeers uri:/lnrpc.Lightning/SubscribePeerEvents uri:/lnrpc.Lightning/SendCustomMessage uri:/lnrpc.Lightning/SubscribeCustomMessages uri:/peersrpc.Peers/UpdateNodeAnnouncement uri:/signrpc.Signer/DeriveSharedKey
+lncli bakemacaroon --save_to=<FILEPATH>/lndk.macaroon bakemacaroon uri:/lnrpc.Lightning/GetInfo uri:/lnrpc.Lightning/ListPeers uri:/lnrpc.Lightning/SubscribePeerEvents uri:/lnrpc.Lightning/SendCustomMessage uri:/lnrpc.Lightning/SubscribeCustomMessages uri:/peersrpc.Peers/UpdateNodeAnnouncement uri:/signrpc.Signer/DeriveSharedKey
 ```
 
 ## Security

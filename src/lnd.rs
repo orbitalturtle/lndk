@@ -6,6 +6,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1};
 use futures::executor::block_on;
+use lightning::blinded_path::BlindedPath;
 use lightning::ln::msgs::UnsignedGossipMessage;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
+use tonic_lnd::lnrpc::{HtlcAttempt, ListPeersResponse, QueryRoutesResponse, Route};
 use tonic_lnd::signrpc::KeyLocator;
 use tonic_lnd::tonic::Status;
 use tonic_lnd::{Client, ConnectError};
@@ -28,6 +30,7 @@ pub(crate) fn get_lnd_client(cfg: LndCfg) -> Result<Client, ConnectError> {
 }
 
 /// LndCfg specifies the configuration required to connect to LND's grpc client.
+#[derive(Clone)]
 pub struct LndCfg {
     address: String,
     cert: PathBuf,
@@ -185,7 +188,7 @@ pub(crate) fn string_to_network(network_str: &str) -> Result<Network, NetworkPar
 
 /// MessageSigner provides a layer of abstraction over the LND API for message signing.
 #[async_trait]
-pub(crate) trait MessageSigner {
+pub trait MessageSigner {
     async fn derive_key(&mut self, key_loc: KeyLocator) -> Result<Vec<u8>, Status>;
     async fn sign_message(
         &mut self,
@@ -193,4 +196,28 @@ pub(crate) trait MessageSigner {
         merkle_hash: Hash,
         tag: String,
     ) -> Result<Vec<u8>, Status>;
+}
+
+/// PeerConnector provides a layer of abstraction over the LND API for connecting to a peer.
+#[async_trait]
+pub trait PeerConnector {
+    async fn list_peers(&mut self) -> Result<ListPeersResponse, Status>;
+    async fn connect_peer(&mut self, node_id: String, addr: String) -> Result<(), Status>;
+}
+
+/// InvoicePayer provides a layer of abstraction over the LND API for paying for a BOLT 12 invoice.
+#[async_trait]
+pub trait InvoicePayer {
+    async fn query_routes(
+        &mut self,
+        path: BlindedPath,
+        cltv_expiry_delta: u16,
+        fee_base_msat: u32,
+        msats: u64,
+    ) -> Result<QueryRoutesResponse, Status>;
+    async fn send_to_route(
+        &mut self,
+        payment_hash: [u8; 32],
+        route: Route,
+    ) -> Result<HtlcAttempt, Status>;
 }

@@ -1,38 +1,65 @@
-use crate::lnd::MessageSigner;
+use crate::lnd::{InvoicePayer, MessageSigner, PeerConnector};
+use crate::OfferHandler;
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Error as Secp256k1Error, PublicKey};
 use futures::executor::block_on;
+use lightning::blinded_path::BlindedPath;
+use lightning::ln::channelmanager::PaymentId;
 use lightning::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 use lightning::offers::merkle::SignError;
-use lightning::offers::offer::Offer;
+use lightning::offers::offer::{Amount, Offer};
 use lightning::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
+use lightning::sign::EntropySource;
 use std::error::Error;
 use std::fmt::Display;
 use tokio::task;
+use tonic_lnd::lnrpc::{
+    HtlcAttempt, ListPeersRequest, ListPeersResponse, QueryRoutesResponse, Route,
+};
 use tonic_lnd::signrpc::{KeyLocator, SignMessageReq};
 use tonic_lnd::tonic::Status;
 use tonic_lnd::Client;
 
 #[derive(Debug)]
 /// OfferError is an error that occurs during the process of paying an offer.
-pub(crate) enum OfferError<Secp256k1Error> {
+pub enum OfferError<Secp256k1Error> {
+    /// AlreadyProcessing indicates that we're already in the process of paying an offer.
+    AlreadyProcessing,
     /// BuildUIRFailure indicates a failure to build the unsigned invoice request.
     BuildUIRFailure(Bolt12SemanticError),
     /// SignError indicates a failure to sign the invoice request.
     SignError(SignError<Secp256k1Error>),
     /// DeriveKeyFailure indicates a failure to derive key for signing the invoice request.
     DeriveKeyFailure(Status),
+    /// User provided an invalid amount.
+    InvalidAmount(String),
+    /// Invalid currency contained in the offer.
+    InvalidCurrency,
+    /// Unable to connect to peer.
+    PeerConnectError(Status),
+    /// Unable to find or send to payment route.
+    RouteFailure(Status),
 }
 
 impl Display for OfferError<Secp256k1Error> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            OfferError::AlreadyProcessing => {
+                write!(f, "LNDK is already trying to pay for provided offer")
+            }
             OfferError::BuildUIRFailure(e) => write!(f, "Error building invoice request: {e:?}"),
             OfferError::SignError(e) => write!(f, "Error signing invoice request: {e:?}"),
             OfferError::DeriveKeyFailure(e) => write!(f, "Error signing invoice request: {e:?}"),
+            OfferError::InvalidAmount(e) => write!(f, "User provided an invalid amount: {e:?}"),
+            OfferError::InvalidCurrency => write!(
+                f,
+                "LNDK doesn't yet support offer currencies other than bitcoin"
+            ),
+            OfferError::PeerConnectError(e) => write!(f, "Error connecting to peer: {e:?}"),
+            OfferError::RouteFailure(e) => write!(f, "Error routing payment: {e:?}"),
         }
     }
 }
@@ -44,58 +71,199 @@ pub fn decode(offer_str: String) -> Result<Offer, Bolt12ParseError> {
     offer_str.parse::<Offer>()
 }
 
-#[allow(dead_code)]
-// create_request_invoice builds and signs an invoice request, the first step in the BOLT 12 process of paying an offer.
-pub(crate) async fn create_request_invoice(
-    mut signer: impl MessageSigner + std::marker::Send + 'static,
-    offer: Offer,
-    metadata: Vec<u8>,
-    network: Network,
-    msats: u64,
-) -> Result<InvoiceRequest, OfferError<bitcoin::secp256k1::Error>> {
-    // We use KeyFamily KeyFamilyNodeKey (6) to derive a key to represent our node id. See:
-    // https://github.com/lightningnetwork/lnd/blob/a3f8011ed695f6204ec6a13ad5c2a67ac542b109/keychain/derivation.go#L103
-    let key_loc = KeyLocator {
-        key_family: 6,
-        key_index: 1,
+// Checks that the user-provided amount matches the offer.
+pub async fn validate_amount(
+    offer: &Offer,
+    amount_msats: Option<u64>,
+) -> Result<(), OfferError<bitcoin::secp256k1::Error>> {
+    match offer.amount() {
+        Some(offer_amount) => {
+            match *offer_amount {
+                Amount::Bitcoin {
+                    amount_msats: bitcoin_amt,
+                } => {
+                    if let Some(msats) = amount_msats {
+                        if msats < bitcoin_amt {
+                            return Err(OfferError::InvalidAmount(format!(
+                                "{msats} is less than offer amount {}",
+                                bitcoin_amt
+                            )));
+                        }
+                        msats
+                    } else {
+                        // If user didn't set amount, set it to the offer amount.
+                        if bitcoin_amt == 0 {
+                            return Err(OfferError::InvalidAmount(
+                                "Offer doesn't set an amount, so user must specify one".to_string(),
+                            ));
+                        }
+                        bitcoin_amt
+                    }
+                }
+                _ => {
+                    return Err(OfferError::InvalidCurrency);
+                }
+            }
+        }
+        None => {
+            if let Some(msats) = amount_msats {
+                msats
+            } else {
+                return Err(OfferError::InvalidAmount(
+                    "Offer doesn't set an amount, so user must specify one".to_string(),
+                ));
+            }
+        }
     };
+    Ok(())
+}
 
-    let pubkey_bytes = signer
-        .derive_key(key_loc.clone())
+// connect_to_peer connects to the provided node if we're not already connected.
+pub async fn connect_to_peer(
+    mut connector: impl PeerConnector,
+    node_id: PublicKey,
+    addr: String,
+) -> Result<(), OfferError<Secp256k1Error>> {
+    let resp = connector
+        .list_peers()
         .await
-        .map_err(OfferError::DeriveKeyFailure)?;
-    let pubkey = PublicKey::from_slice(&pubkey_bytes).expect("failed to deserialize public key");
+        .map_err(OfferError::PeerConnectError)?;
 
-    let unsigned_invoice_req = offer
-        .request_invoice(metadata, pubkey)
-        .unwrap()
-        .chain(network)
-        .unwrap()
-        .amount_msats(msats)
-        .unwrap()
-        .build()
-        .map_err(OfferError::BuildUIRFailure)?;
+    let node_id_str = node_id.to_string();
+    for peer in resp.peers.iter() {
+        if peer.pub_key.clone() == node_id_str.clone() {
+            return Ok(());
+        }
+    }
 
-    // To create a valid invoice request, we also need to sign it. This is spawned in a blocking
-    // task because we need to call block_on on sign_message so that sign_closure can be a
-    // synchronous closure.
-    task::spawn_blocking(move || {
-        let sign_closure = |msg: &UnsignedInvoiceRequest| {
-            let tagged_hash = msg.as_ref();
-            let tag = tagged_hash.tag().to_string();
+    connector
+        .connect_peer(node_id.to_string(), addr)
+        .await
+        .map_err(OfferError::PeerConnectError)?;
 
-            let signature = block_on(signer.sign_message(key_loc, tagged_hash.merkle_root(), tag))
-                .map_err(|_| Secp256k1Error::InvalidSignature)?;
+    Ok(())
+}
 
-            Signature::from_slice(&signature)
+impl OfferHandler {
+    // create_invoice_request builds and signs an invoice request, the first step in the BOLT 12 process of paying an offer.
+    pub async fn create_invoice_request(
+        &self,
+        mut signer: impl MessageSigner + std::marker::Send + 'static,
+        offer: Offer,
+        _metadata: Vec<u8>,
+        network: Network,
+        msats: u64,
+    ) -> Result<InvoiceRequest, OfferError<bitcoin::secp256k1::Error>> {
+        // We use KeyFamily KeyFamilyNodeKey (6) to derive a key to represent our node id. See:
+        // https://github.com/lightningnetwork/lnd/blob/a3f8011ed695f6204ec6a13ad5c2a67ac542b109/keychain/derivation.go#L103
+        let key_loc = KeyLocator {
+            key_family: 6,
+            key_index: 1,
         };
 
-        unsigned_invoice_req
-            .sign(sign_closure)
-            .map_err(OfferError::SignError)
-    })
-    .await
-    .unwrap()
+        let pubkey_bytes = signer
+            .derive_key(key_loc.clone())
+            .await
+            .map_err(OfferError::DeriveKeyFailure)?;
+        let pubkey =
+            PublicKey::from_slice(&pubkey_bytes).expect("failed to deserialize public key");
+
+        // Generate a new payment id for this payment.
+        let bytes = self.messenger_utils.get_secure_random_bytes();
+        // We need to add some metadata to the invoice request to help with verification of the invoice
+        // once returned from the offer maker.
+        let unsigned_invoice_req = offer
+            .request_invoice_deriving_metadata(
+                pubkey,
+                &self.expanded_key,
+                &self.messenger_utils,
+                PaymentId(bytes),
+            )
+            .unwrap()
+            .chain(network)
+            .unwrap()
+            .amount_msats(msats)
+            .unwrap()
+            .build()
+            .map_err(OfferError::BuildUIRFailure)?;
+
+        // To create a valid invoice request, we also need to sign it. This is spawned in a blocking
+        // task because we need to call block_on on sign_message so that sign_closure can be a
+        // synchronous closure.
+        task::spawn_blocking(move || {
+            let sign_closure = |msg: &UnsignedInvoiceRequest| {
+                let tagged_hash = msg.as_ref();
+                let tag = tagged_hash.tag().to_string();
+
+                let signature =
+                    block_on(signer.sign_message(key_loc, tagged_hash.merkle_root(), tag))
+                        .map_err(|_| Secp256k1Error::InvalidSignature)?;
+
+                Signature::from_slice(&signature)
+            };
+
+            unsigned_invoice_req
+                .sign(sign_closure)
+                .map_err(OfferError::SignError)
+        })
+        .await
+        .unwrap()
+    }
+}
+
+// pay_invoice tries to pay the provided invoice.
+pub(crate) async fn pay_invoice(
+    mut payer: impl InvoicePayer + std::marker::Send + 'static,
+    path: BlindedPath,
+    cltv_expiry_delta: u16,
+    fee_base_msat: u32,
+    payment_hash: [u8; 32],
+    msats: u64,
+) -> Result<(), OfferError<Secp256k1Error>> {
+    let resp = payer
+        .query_routes(path, cltv_expiry_delta, fee_base_msat, msats)
+        .await
+        .map_err(OfferError::RouteFailure)?;
+
+    // TODO: If route fails, loop over resp.routes array and try alternatives.
+    let _send_resp = payer
+        .send_to_route(payment_hash, resp.routes[0].clone())
+        .await
+        .map_err(OfferError::RouteFailure)?;
+
+    Ok(())
+}
+
+#[async_trait]
+impl PeerConnector for Client {
+    async fn list_peers(&mut self) -> Result<ListPeersResponse, Status> {
+        let list_req = ListPeersRequest {
+            ..Default::default()
+        };
+
+        self.lightning()
+            .list_peers(list_req)
+            .await
+            .map(|resp| resp.into_inner())
+    }
+
+    async fn connect_peer(&mut self, node_id: String, addr: String) -> Result<(), Status> {
+        let ln_addr = tonic_lnd::lnrpc::LightningAddress {
+            pubkey: node_id,
+            host: addr,
+        };
+
+        let connect_req = tonic_lnd::lnrpc::ConnectPeerRequest {
+            addr: Some(ln_addr),
+            timeout: 20,
+            ..Default::default()
+        };
+
+        self.lightning()
+            .connect_peer(connect_req.clone())
+            .await
+            .map(|_| ())
+    }
 }
 
 #[async_trait]
@@ -115,7 +283,7 @@ impl MessageSigner for Client {
     ) -> Result<Vec<u8>, Status> {
         let tag_vec = tag.as_bytes().to_vec();
         let req = SignMessageReq {
-            msg: merkle_root.as_ref().to_vec(),
+            msg: <bitcoin::hashes::sha256::Hash as AsRef<[u8; 32]>>::as_ref(&merkle_root).to_vec(),
             tag: tag_vec,
             key_loc: Some(key_loc),
             schnorr_sig: true,
@@ -129,14 +297,90 @@ impl MessageSigner for Client {
     }
 }
 
+#[async_trait]
+impl InvoicePayer for Client {
+    async fn query_routes(
+        &mut self,
+        path: BlindedPath,
+        cltv_expiry_delta: u16,
+        fee_base_msat: u32,
+        msats: u64,
+    ) -> Result<QueryRoutesResponse, Status> {
+        let mut blinded_hops = vec![];
+        for hop in path.blinded_hops.iter() {
+            let new_hop = tonic_lnd::lnrpc::BlindedHop {
+                blinded_node: hop.blinded_node_id.serialize().to_vec(),
+                encrypted_data: hop.clone().encrypted_payload,
+            };
+            blinded_hops.push(new_hop);
+        }
+
+        let blinded_path = Some(tonic_lnd::lnrpc::BlindedPath {
+            introduction_node: path.introduction_node_id.serialize().to_vec(),
+            blinding_point: path.blinding_point.serialize().to_vec(),
+            blinded_hops,
+        });
+
+        let blinded_payment_paths = tonic_lnd::lnrpc::BlindedPaymentPath {
+            blinded_path,
+            total_cltv_delta: u32::from(cltv_expiry_delta) + 120,
+            base_fee_msat: u64::from(fee_base_msat),
+            ..Default::default()
+        };
+
+        let query_req = tonic_lnd::lnrpc::QueryRoutesRequest {
+            amt_msat: msats as i64,
+            blinded_payment_paths: vec![blinded_payment_paths],
+            ..Default::default()
+        };
+
+        let resp = self.lightning().query_routes(query_req).await?;
+        Ok(resp.into_inner())
+    }
+
+    async fn send_to_route(
+        &mut self,
+        payment_hash: [u8; 32],
+        route: Route,
+    ) -> Result<HtlcAttempt, Status> {
+        let send_req = tonic_lnd::routerrpc::SendToRouteRequest {
+            payment_hash: payment_hash.to_vec(),
+            route: Some(route),
+            ..Default::default()
+        };
+
+        let resp = self.router().send_to_route_v2(send_req).await?;
+        Ok(resp.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MessengerUtilities;
+    use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
+    use lightning::offers::offer::{OfferBuilder, Quantity};
     use mockall::mock;
     use std::str::FromStr;
+    use std::time::{Duration, SystemTime};
 
     fn get_offer() -> String {
         "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve2rlrm9deu7xyfzrcgqgn3qzsyvfkx26qkyypvr5hfx60h9w9k934lt8s2n6zc0wwtgqlulw7dythr83dqx8tzumg".to_string()
+    }
+
+    fn build_custom_offer(amount_msats: u64) -> Offer {
+        let secp_ctx = Secp256k1::new();
+        let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+        let pubkey = PublicKey::from(keys);
+
+        let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
+        OfferBuilder::new("coffee".to_string(), pubkey)
+            .amount_msats(amount_msats)
+            .supported_quantity(Quantity::Unbounded)
+            .absolute_expiry(expiration.duration_since(SystemTime::UNIX_EPOCH).unwrap())
+            .issuer("Foo Bar".to_string())
+            .build()
+            .unwrap()
     }
 
     fn get_pubkey() -> String {
@@ -147,6 +391,17 @@ mod tests {
         "28b937976a29c15827433086440b36c2bec6ca5bd977557972dca8641cd59ffba50daafb8ee99a19c950976b46f47d9e7aa716652e5657dfc555b82eff467f18".to_string()
     }
 
+    fn get_blinded_path() -> BlindedPath {
+        let entropy_source = MessengerUtilities::new();
+        let secp_ctx = Secp256k1::new();
+        BlindedPath::new_for_message(
+            &[PublicKey::from_str(&get_pubkey()).unwrap()],
+            &entropy_source,
+            &secp_ctx,
+        )
+        .unwrap()
+    }
+
     mock! {
         TestBolt12Signer{}
 
@@ -155,6 +410,26 @@ mod tests {
              async fn derive_key(&mut self, key_loc: KeyLocator) -> Result<Vec<u8>, Status>;
              async fn sign_message(&mut self, key_loc: KeyLocator, merkle_hash: Hash, tag: String) -> Result<Vec<u8>, Status>;
          }
+    }
+
+    mock! {
+        TestPeerConnector{}
+
+         #[async_trait]
+         impl PeerConnector for TestPeerConnector {
+             async fn list_peers(&mut self) -> Result<ListPeersResponse, Status>;
+             async fn connect_peer(&mut self, node_id: String, addr: String) -> Result<(), Status>;
+         }
+    }
+
+    mock! {
+    TestInvoicePayer{}
+
+        #[async_trait]
+        impl InvoicePayer for TestInvoicePayer{
+            async fn query_routes(&mut self, path: BlindedPath, cltv_expiry_delta: u16, fee_base_msat: u32, msats: u64) -> Result<QueryRoutesResponse, Status>;
+            async fn send_to_route(&mut self, payment_hash: [u8; 32], route: Route) -> Result<HtlcAttempt, Status>;
+        }
     }
 
     #[tokio::test]
@@ -176,12 +451,11 @@ mod tests {
         });
 
         let offer = decode(get_offer()).unwrap();
-
-        assert!(
-            create_request_invoice(signer_mock, offer, vec![], Network::Regtest, 10000)
-                .await
-                .is_ok()
-        )
+        let handler = OfferHandler::new();
+        assert!(handler
+            .create_invoice_request(signer_mock, offer, vec![], Network::Regtest, 10000)
+            .await
+            .is_ok())
     }
 
     #[tokio::test]
@@ -200,12 +474,11 @@ mod tests {
         });
 
         let offer = decode(get_offer()).unwrap();
-
-        assert!(
-            create_request_invoice(signer_mock, offer, vec![], Network::Regtest, 10000)
-                .await
-                .is_err()
-        )
+        let handler = OfferHandler::new();
+        assert!(handler
+            .create_invoice_request(signer_mock, offer, vec![], Network::Regtest, 10000)
+            .await
+            .is_err())
     }
 
     #[tokio::test]
@@ -224,11 +497,176 @@ mod tests {
             .returning(|_, _, _| Err(Status::unknown("error testing")));
 
         let offer = decode(get_offer()).unwrap();
+        let handler = OfferHandler::new();
+        assert!(handler
+            .create_invoice_request(signer_mock, offer, vec![], Network::Regtest, 10000)
+            .await
+            .is_err())
+    }
 
+    #[tokio::test]
+    async fn test_validate_amount() {
+        // If the amount the user provided is greater than the offer-provided amount, then
+        // we should be good.
+        let offer = build_custom_offer(20000);
+        assert!(validate_amount(&offer, Some(20000)).await.is_ok());
+
+        let offer = build_custom_offer(0);
+        assert!(validate_amount(&offer, Some(20000)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_invalid_amount() {
+        // If the amount the user provided is lower than the offer amount, we error.
+        let offer = build_custom_offer(20000);
+        assert!(validate_amount(&offer, Some(1000)).await.is_err());
+
+        // Both user amount and offer amount can't be 0.
+        let offer = build_custom_offer(0);
+        assert!(validate_amount(&offer, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer() {
+        let mut connector_mock = MockTestPeerConnector::new();
+
+        connector_mock.expect_list_peers().returning(|| {
+            Ok(ListPeersResponse {
+                ..Default::default()
+            })
+        });
+
+        connector_mock
+            .expect_connect_peer()
+            .returning(|_, _| Ok(()));
+
+        let pubkey = PublicKey::from_str(&get_pubkey()).unwrap();
         assert!(
-            create_request_invoice(signer_mock, offer, vec![], Network::Regtest, 10000)
+            connect_to_peer(connector_mock, pubkey, String::from("127.0.0.1"))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_already_connected() {
+        let mut connector_mock = MockTestPeerConnector::new();
+
+        connector_mock.expect_list_peers().returning(|| {
+            let peer = tonic_lnd::lnrpc::Peer {
+                pub_key: get_pubkey(),
+                ..Default::default()
+            };
+
+            Ok(ListPeersResponse {
+                peers: vec![peer],
+                ..Default::default()
+            })
+        });
+
+        let pubkey = PublicKey::from_str(&get_pubkey()).unwrap();
+        assert!(
+            connect_to_peer(connector_mock, pubkey, String::from("127.0.0.1"))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_connect_error() {
+        let mut connector_mock = MockTestPeerConnector::new();
+
+        connector_mock.expect_list_peers().returning(|| {
+            Ok(ListPeersResponse {
+                ..Default::default()
+            })
+        });
+
+        connector_mock
+            .expect_connect_peer()
+            .returning(|_, _| Err(Status::unknown("")));
+
+        let pubkey = PublicKey::from_str(&get_pubkey()).unwrap();
+        assert!(
+            connect_to_peer(connector_mock, pubkey, String::from("127.0.0.1"))
                 .await
                 .is_err()
-        )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_invoice() {
+        let mut payer_mock = MockTestInvoicePayer::new();
+
+        payer_mock.expect_query_routes().returning(|_, _, _, _| {
+            let route = Route {
+                ..Default::default()
+            };
+            Ok(QueryRoutesResponse {
+                routes: vec![route],
+                ..Default::default()
+            })
+        });
+
+        payer_mock.expect_send_to_route().returning(|_, _| {
+            Ok(HtlcAttempt {
+                ..Default::default()
+            })
+        });
+
+        let blinded_path = get_blinded_path();
+        let payment_hash = MessengerUtilities::new().get_secure_random_bytes();
+        assert!(
+            pay_invoice(payer_mock, blinded_path, 200, 1, payment_hash, 2000)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_invoice_query_error() {
+        let mut payer_mock = MockTestInvoicePayer::new();
+
+        payer_mock.expect_query_routes().returning(|_, _, _, _| {
+            let route = Route {
+                ..Default::default()
+            };
+            Err(Status::unknown("unknown error"))
+        });
+
+        let blinded_path = get_blinded_path();
+        let payment_hash = MessengerUtilities::new().get_secure_random_bytes();
+        assert!(
+            pay_invoice(payer_mock, blinded_path, 200, 1, payment_hash, 2000)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay_invoice_send_error() {
+        let mut payer_mock = MockTestInvoicePayer::new();
+
+        payer_mock.expect_query_routes().returning(|_, _, _, _| {
+            let route = Route {
+                ..Default::default()
+            };
+            Ok(QueryRoutesResponse {
+                routes: vec![route],
+                ..Default::default()
+            })
+        });
+
+        payer_mock
+            .expect_send_to_route()
+            .returning(|_, _| Err(Status::unknown("unknown error")));
+
+        let blinded_path = get_blinded_path();
+        let payment_hash = MessengerUtilities::new().get_secure_random_bytes();
+        assert!(
+            pay_invoice(payer_mock, blinded_path, 200, 1, payment_hash, 2000)
+                .await
+                .is_err()
+        );
     }
 }
