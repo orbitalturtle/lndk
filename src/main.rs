@@ -4,7 +4,6 @@ mod internal {
     #![allow(clippy::useless_conversion)]
     #![allow(clippy::never_loop)]
     #![allow(clippy::uninlined_format_args)]
-
     #![warn(unused_imports)]
     include!(concat!(env!("OUT_DIR"), "/configure_me_config.rs"));
 }
