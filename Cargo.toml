@@ -27,7 +27,7 @@ tokio = { version = "1.25.0", features = ["rt", "rt-multi-thread"] }
 tonic = "0.8.3"
 tonic_lnd = { git = "https://github.com/orbitalturtle/tonic_lnd", branch="update-signer-and-lightning", package="fedimint-tonic-lnd", features = ["lightningrpc", "routerrpc"] }
 hex = "0.4.3"
-configure_me = { git = "https://github.com/orbitalturtle/configure_me", rev = "1364f6af725adb550f0a457a0da41c7d4805fd75" }
+configure_me = { git = "https://github.com/orbitalturtle/configure_me", rev = "db61f0dea8c86b04c2e40c4f95f5e3445958ae18" }
 bytes = "1.4.0"
 triggered = "0.1.2"
 
