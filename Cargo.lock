@@ -443,8 +443,7 @@ checksum = "acbf1af155f9b9ef647e42cdc158db4b64a1b61f743629225fde6f3e0be2a7c7"
 [[package]]
 name = "configure_me"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03c1fbdead926855bdafee8ddf16cd42efb3c75d8cde8c87f8937b99510b39d"
+source = "git+https://github.com/orbitalturtle/configure_me?rev=1364f6af725adb550f0a457a0da41c7d4805fd75#1364f6af725adb550f0a457a0da41c7d4805fd75"
 dependencies = [
  "parse_arg",
  "serde",
