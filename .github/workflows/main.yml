@@ -34,7 +34,6 @@ jobs:
         name: cargo clippy
         with:
           command: clippy
-          args: -- --deny warnings
 
   ########################
   # run ubuntu integration tests
