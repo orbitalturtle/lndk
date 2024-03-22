@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
-use lndk::lnd::{get_lnd_client, string_to_network, LndCfg};
-use lndk::lndk_offers::{decode, get_destination};
-use lndk::{Cfg, LifecycleSignals, LndkOnionMessenger, OfferHandler, PayOfferParams};
+use lndk::lndk_offers::decode;
+use lndk::offers::offers_client::OffersClient;
+use lndk::offers::PayOfferRequest;
+use lndk::DEFAULT_SERVER_PORT;
 use std::ffi::OsString;
-use std::sync::Arc;
-use tokio::select;
+use tonic::Request;
 
 fn get_cert_path_default() -> OsString {
     home::home_dir()
@@ -98,10 +98,16 @@ async fn main() -> Result<(), ()> {
             }
         }
         Commands::PayOffer {
-            offer_string,
+            ref offer_string,
             amount,
         } => {
-            let offer = match decode(offer_string) {
+            let mut client = OffersClient::connect(format!("http://[::1]:{DEFAULT_SERVER_PORT}"))
+                .await
+                .map_err(|e| {
+                    println!("ERROR: connecting to server {:?}.", e);
+                })?;
+
+            let offer = match decode(offer_string.to_owned()) {
                 Ok(offer) => offer,
                 Err(e) => {
                     println!(
@@ -113,50 +119,41 @@ async fn main() -> Result<(), ()> {
                 }
             };
 
-            let destination = get_destination(&offer).await;
-            let network = string_to_network(&args.network).map_err(|e| {
-                println!("ERROR: invalid network string: {}", e);
-            })?;
-            let lnd_cfg = LndCfg::new(args.address, args.tls_cert.into(), args.macaroon.into());
-            let client = get_lnd_client(lnd_cfg.clone()).map_err(|e| {
-                println!("ERROR: failed to connect to lnd: {}", e);
-            })?;
-
-            let (shutdown, listener) = triggered::trigger();
-            let signals = LifecycleSignals {
-                shutdown: shutdown.clone(),
-                listener,
-            };
-            let lndk_cfg = Cfg {
-                lnd: lnd_cfg,
-                signals,
-            };
-
-            let handler = Arc::new(OfferHandler::new());
-            let messenger = LndkOnionMessenger::new();
-            let pay_cfg = PayOfferParams {
-                offer: offer.clone(),
+            let mut request = Request::new(PayOfferRequest {
+                offer: offer.to_string(),
                 amount,
-                network,
-                client,
-                destination,
-                reply_path: None,
-            };
-            select! {
-                _ = messenger.run(lndk_cfg, Arc::clone(&handler)) => {
-                    println!("ERROR: lndk stopped running before pay offer finished.");
-                },
-                res = handler.pay_offer(pay_cfg) => {
-                    match res {
-                        Ok(_) => println!("Successfully paid for offer!"),
-                        Err(err) => println!("Error paying for offer: {err:?}"),
-                    }
+            });
+            add_metadata(&mut request, args).map_err(|_| ())?;
 
-                    shutdown.trigger();
-                }
-            }
+            match client.pay_offer(request).await {
+                Ok(_) => println!("Successfully paid for offer!"),
+                Err(err) => println!("Error paying for offer: {err:?}"),
+            };
 
             Ok(())
         }
     }
+}
+
+fn add_metadata(request: &mut Request<PayOfferRequest>, args: Cli) -> Result<(), ()> {
+    request.metadata_mut().insert(
+        "tls_cert_path",
+        args.tls_cert
+            .parse()
+            .map_err(|e| println!("Error parsing provided tls cert path {e:?}"))?,
+    );
+    request.metadata_mut().insert(
+        "macaroon_path",
+        args.macaroon
+            .parse()
+            .map_err(|e| println!("Error parsing provided macaroon path {e:?}"))?,
+    );
+    request.metadata_mut().insert(
+        "address",
+        args.address
+            .parse()
+            .map_err(|e| println!("Error parsing provided address {e:?}"))?,
+    );
+
+    Ok(())
 }
