@@ -5,14 +5,12 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::Network;
 use bitcoincore_rpc::bitcoin::Network as RpcNetwork;
 use bitcoincore_rpc::RpcApi;
-use chrono::Utc;
 use ldk_sample::node_api::Node as LdkNode;
 use lightning::blinded_path::BlindedPath;
 use lightning::offers::offer::Quantity;
 use lightning::onion_message::messenger::Destination;
 use lndk::onion_messenger::MessengerUtilities;
-use lndk::{LifecycleSignals, PayOfferParams};
-use log::LevelFilter;
+use lndk::{setup_logger, LifecycleSignals, PayOfferParams};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -56,7 +54,7 @@ async fn check_for_message(ldk: LdkNode) -> LdkNode {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_lndk_forwards_onion_message() {
     let test_name = "lndk_forwards_onion_message";
-    let (_bitcoind, mut lnd, ldk1, ldk2, lndk_dir) =
+    let (_bitcoind, mut lnd, ldk1, ldk2, _lndk_dir) =
         common::setup_test_infrastructure(test_name).await;
 
     // Here we'll produce a little path of two channels. Both ldk nodes are connected to lnd like so:
@@ -78,8 +76,6 @@ async fn test_lndk_forwards_onion_message() {
         PathBuf::from_str(&lnd.cert_path).unwrap(),
         PathBuf::from_str(&lnd.macaroon_path).unwrap(),
     );
-    let now_timestamp = Utc::now();
-    let timestamp = now_timestamp.format("%d-%m-%Y-%H%M");
     let (tx, _): (Sender<u32>, Receiver<u32>) = mpsc::channel(1);
     let signals = LifecycleSignals {
         shutdown: shutdown.clone(),
@@ -88,14 +84,6 @@ async fn test_lndk_forwards_onion_message() {
     };
     let lndk_cfg = lndk::Cfg {
         lnd: lnd_cfg,
-        log_dir: Some(
-            lndk_dir
-                .join(format!("lndk-logs-{test_name}-{timestamp}"))
-                .to_str()
-                .unwrap()
-                .to_string(),
-        ),
-        log_level: LevelFilter::Info,
         signals,
     };
 
@@ -201,14 +189,6 @@ async fn test_lndk_send_invoice_request() {
 
     let lndk_cfg = lndk::Cfg {
         lnd: lnd_cfg.clone(),
-        log_dir: Some(
-            lndk_dir
-                .join(format!("lndk-logs.txt"))
-                .to_str()
-                .unwrap()
-                .to_string(),
-        ),
-        log_level: LevelFilter::Info,
         signals,
     };
 
@@ -239,6 +219,15 @@ async fn test_lndk_send_invoice_request() {
             }
         }
     }
+
+    let log_dir = Some(
+        lndk_dir
+            .join(format!("lndk-logs.txt"))
+            .to_str()
+            .unwrap()
+            .to_string(),
+    );
+    setup_logger(None, log_dir).unwrap();
 
     // Make sure lndk successfully sends the invoice_request.
     let handler = Arc::new(lndk::OfferHandler::new());
@@ -276,14 +265,6 @@ async fn test_lndk_send_invoice_request() {
 
     let lndk_cfg = lndk::Cfg {
         lnd: lnd_cfg,
-        log_dir: Some(
-            lndk_dir
-                .join(format!("lndk-logs.txt"))
-                .to_str()
-                .unwrap()
-                .to_string(),
-        ),
-        log_level: LevelFilter::Info,
         signals,
     };
 
@@ -405,14 +386,6 @@ async fn test_lndk_pay_offer() {
 
     let lndk_cfg = lndk::Cfg {
         lnd: lnd_cfg,
-        log_dir: Some(
-            lndk_dir
-                .join(format!("lndk-logs.txt"))
-                .to_str()
-                .unwrap()
-                .to_string(),
-        ),
-        log_level: LevelFilter::Info,
         signals,
     };
 
@@ -434,6 +407,14 @@ async fn test_lndk_pay_offer() {
         destination: Destination::BlindedPath(blinded_path.clone()),
         reply_path: Some(reply_path),
     };
+    let log_dir = Some(
+        lndk_dir
+            .join(format!("lndk-logs.txt"))
+            .to_str()
+            .unwrap()
+            .to_string(),
+    );
+    setup_logger(None, log_dir).unwrap();
     select! {
         val = messenger.run(lndk_cfg, Arc::clone(&handler)) => {
             panic!("lndk should not have completed first {:?}", val);
