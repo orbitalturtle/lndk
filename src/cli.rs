@@ -5,8 +5,6 @@ use lndk::{Cfg, LifecycleSignals, LndkOnionMessenger, OfferHandler, PayOfferPara
 use std::ffi::OsString;
 use std::sync::Arc;
 use tokio::select;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender};
 
 fn get_cert_path_default() -> OsString {
     home::home_dir()
@@ -125,11 +123,9 @@ async fn main() -> Result<(), ()> {
             })?;
 
             let (shutdown, listener) = triggered::trigger();
-            let (tx, rx): (Sender<u32>, Receiver<u32>) = mpsc::channel(1);
             let signals = LifecycleSignals {
                 shutdown: shutdown.clone(),
                 listener,
-                started: tx,
             };
             let lndk_cfg = Cfg {
                 lnd: lnd_cfg,
@@ -150,7 +146,7 @@ async fn main() -> Result<(), ()> {
                 _ = messenger.run(lndk_cfg, Arc::clone(&handler)) => {
                     println!("ERROR: lndk stopped running before pay offer finished.");
                 },
-                res = handler.pay_offer(pay_cfg, rx) => {
+                res = handler.pay_offer(pay_cfg) => {
                     match res {
                         Ok(_) => println!("Successfully paid for offer!"),
                         Err(err) => println!("Error paying for offer: {err:?}"),
