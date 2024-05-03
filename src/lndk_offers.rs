@@ -21,7 +21,7 @@ use std::fmt::Display;
 use std::str::FromStr;
 use tokio::task;
 use tonic_lnd::lnrpc::{
-    GetInfoRequest, HtlcAttempt, LightningNode, ListPeersRequest, ListPeersResponse,
+    GetInfoRequest, HtlcAttempt, LightningNode, ListPeersRequest, ListPeersResponse, Payment,
     QueryRoutesResponse, Route,
 };
 use tonic_lnd::routerrpc::TrackPaymentRequest;
@@ -260,7 +260,7 @@ impl OfferHandler {
         &self,
         mut payer: impl InvoicePayer + std::marker::Send + 'static,
         params: PayInvoiceParams,
-    ) -> Result<(), OfferError<Secp256k1Error>> {
+    ) -> Result<Payment, OfferError<Secp256k1Error>> {
         let resp = payer
             .query_routes(
                 params.path,
@@ -549,7 +549,7 @@ impl InvoicePayer for Client {
     async fn track_payment(
         &mut self,
         payment_hash: [u8; 32],
-    ) -> Result<(), OfferError<Secp256k1Error>> {
+    ) -> Result<Payment, OfferError<Secp256k1Error>> {
         let req = TrackPaymentRequest {
             payment_hash: payment_hash.to_vec(),
             no_inflight_updates: true,
@@ -565,7 +565,7 @@ impl InvoicePayer for Client {
         // Wait for a failed or successful payment.
         while let Some(payment) = stream.message().await.map_err(OfferError::TrackFailure)? {
             if payment.status() == tonic_lnd::lnrpc::payment::PaymentStatus::Succeeded {
-                return Ok(());
+                return Ok(payment);
             } else if payment.status() == tonic_lnd::lnrpc::payment::PaymentStatus::Failed {
                 return Err(OfferError::PaymentFailure);
             } else {

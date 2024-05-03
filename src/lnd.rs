@@ -19,7 +19,8 @@ use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 use tonic_lnd::lnrpc::{
-    GetInfoResponse, HtlcAttempt, LightningNode, ListPeersResponse, QueryRoutesResponse, Route,
+    GetInfoResponse, HtlcAttempt, LightningNode, ListPeersResponse, Payment, QueryRoutesResponse,
+    Route,
 };
 use tonic_lnd::signrpc::KeyLocator;
 use tonic_lnd::tonic::Status;
@@ -250,5 +251,5 @@ pub trait InvoicePayer {
     async fn track_payment(
         &mut self,
         payment_hash: [u8; 32],
-    ) -> Result<(), OfferError<Secp256k1Error>>;
+    ) -> Result<Payment, OfferError<Secp256k1Error>>;
 }
