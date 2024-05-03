@@ -251,6 +251,8 @@ impl OfferHandler {
             Ok(invoice) => invoice,
             Err(_) => {
                 error!("Did not receive invoice in 100 seconds.");
+                let mut active_offers = self.active_offers.lock().unwrap();
+                active_offers.remove(&offer_id.clone());
                 return Err(OfferError::InvoiceTimeout);
             }
         };
