@@ -1,6 +1,6 @@
 # LNDK-CLI
 
-For now, you can use `lndk-cli` separately from `lndk` meaning you don't need to have a `lndk` binary running for `lndk-cli` to work.
+You can use `lndk-cli` to connect to a running instance of lndk and pay an offer.
 
 ## Installation
 
