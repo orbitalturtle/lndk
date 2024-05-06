@@ -44,6 +44,9 @@ struct Cli {
     #[arg(short, long, global = true, required = false, default_value = get_macaroon_path_default())]
     macaroon: String,
 
+    #[arg(short, long, global = true, required = false, default_value = DEFAULT_SERVER_PORT.to_string())]
+    grpc_port: u16,
+
     #[arg(
         short,
         long,
@@ -101,7 +104,8 @@ async fn main() -> Result<(), ()> {
             ref offer_string,
             amount,
         } => {
-            let mut client = OffersClient::connect(format!("http://[::1]:{DEFAULT_SERVER_PORT}"))
+            let grpc_port = args.grpc_port;
+            let mut client = OffersClient::connect(format!("http://[::1]:{grpc_port}"))
                 .await
                 .map_err(|e| {
                     println!("ERROR: connecting to server {:?}.", e);

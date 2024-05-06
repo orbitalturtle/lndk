@@ -52,15 +52,19 @@ async fn main() -> Result<(), ()> {
         .expect("failed to get info")
         .into_inner();
 
-    let addr = format!("[::1]:{DEFAULT_SERVER_PORT}")
-        .parse()
-        .map_err(|e| {
-            error!("Error parsing API address: {e}");
-        })?;
+    let grpc_port = match config.grpc_port {
+        Some(port) => port,
+        None => DEFAULT_SERVER_PORT,
+    };
+    let addr = format!("[::1]:{grpc_port}").parse().map_err(|e| {
+        error!("Error parsing API address: {e}");
+    })?;
     let server = LNDKServer::new(Arc::clone(&handler), &info.identity_pubkey).await;
     let server_fut = Server::builder()
         .add_service(OffersServer::new(server))
         .serve(addr);
+
+    info!("Starting lndk's grpc server on port {grpc_port}");
 
     select! {
        _ = messenger.run(args, Arc::clone(&handler)) => {
