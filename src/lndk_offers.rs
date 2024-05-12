@@ -477,7 +477,10 @@ impl MessageSigner for Client {
             let tag = tagged_hash.tag().to_string();
 
             let signature = block_on(self.sign_message(key_loc, tagged_hash.merkle_root(), tag))
-                .map_err(|_| Secp256k1Error::InvalidSignature)?;
+                .map_err(|e| {
+                    error!("Failed to sign invoice request: {e}.");
+                    Secp256k1Error::InvalidSignature
+                })?;
 
             Signature::from_slice(&signature)
         };
