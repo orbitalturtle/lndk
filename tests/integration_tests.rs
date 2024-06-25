@@ -213,7 +213,8 @@ async fn test_lndk_send_invoice_request() {
     let messenger_utils = MessengerUtilities::new();
     let secp_ctx = Secp256k1::new();
     let reply_path =
-        BlindedPath::new_for_message(&[pubkey_2, lnd_pubkey], &messenger_utils, &secp_ctx).unwrap();
+        BlindedPath::new_for_message(&[pubkey_2, lnd_pubkey.clone()], &messenger_utils, &secp_ctx)
+            .unwrap();
 
     let mut stream = client
         .lightning()
@@ -254,6 +255,7 @@ async fn test_lndk_send_invoice_request() {
         client: client.clone(),
         destination: Destination::BlindedPath(blinded_path.clone()),
         reply_path: Some(reply_path.clone()),
+        our_node_id: lnd_pubkey,
     };
     select! {
         val = messenger.run(lndk_cfg, Arc::clone(&handler)) => {
@@ -429,6 +431,7 @@ async fn test_lndk_pay_offer() {
         client: client.clone(),
         destination: Destination::BlindedPath(blinded_path.clone()),
         reply_path: Some(reply_path),
+        our_node_id: lnd_pubkey,
     };
     let log_dir = Some(
         lndk_dir

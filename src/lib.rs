@@ -240,6 +240,8 @@ pub struct PayOfferParams {
     /// The path we will send back to the offer creator, so it knows where to send back the
     /// invoice.
     pub reply_path: Option<BlindedPath>,
+    // The node id of the LND node LNDK is connected to.
+    pub our_node_id: PublicKey,
 }
 
 impl OfferHandler {

@@ -106,9 +106,16 @@ impl OfferHandler {
         // any intermediate nodes here. In the future we'll query for a full path to the
         // introduction node for better sender privacy.
         match cfg.destination {
-            Destination::Node(pubkey) => connect_to_peer(cfg.client.clone(), pubkey).await?,
+            Destination::Node(pubkey) => {
+                connect_to_peer(cfg.client.clone(), pubkey, cfg.our_node_id).await?
+            }
             Destination::BlindedPath(ref path) => {
-                connect_to_peer(cfg.client.clone(), path.introduction_node_id).await?
+                connect_to_peer(
+                    cfg.client.clone(),
+                    path.introduction_node_id,
+                    cfg.our_node_id,
+                )
+                .await?
             }
         };
 
@@ -360,7 +367,12 @@ pub async fn get_destination(offer: &Offer) -> Destination {
 pub async fn connect_to_peer(
     mut connector: impl PeerConnector,
     node_id: PublicKey,
+    our_node_id: PublicKey,
 ) -> Result<(), OfferError<Secp256k1Error>> {
+    if node_id == our_node_id {
+        return Ok(());
+    };
+
     let resp = connector
         .list_peers()
         .await
@@ -803,8 +815,21 @@ mod tests {
             .expect_connect_peer()
             .returning(|_, _| Ok(()));
 
-        let pubkey = PublicKey::from_str(&get_pubkey()[0]).unwrap();
-        assert!(connect_to_peer(connector_mock, pubkey).await.is_ok());
+        let pubkey1 = PublicKey::from_str(&get_pubkey()[0]).unwrap();
+        let pubkey2 = PublicKey::from_str(&get_pubkey()[1]).unwrap();
+        assert!(connect_to_peer(connector_mock, pubkey1, pubkey2)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    // Test that we get an OK result if we try to connect to ourself.
+    async fn test_connect_peer_ourself() {
+        let connector_mock = MockTestPeerConnector::new();
+        let pubkey1 = PublicKey::from_str(&get_pubkey()[0]).unwrap();
+        assert!(connect_to_peer(connector_mock, pubkey1.clone(), pubkey1)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -835,8 +860,11 @@ mod tests {
             Ok(Some(node))
         });
 
-        let pubkey = PublicKey::from_str(&get_pubkey()[0]).unwrap();
-        assert!(connect_to_peer(connector_mock, pubkey).await.is_ok());
+        let pubkey1 = PublicKey::from_str(&get_pubkey()[0]).unwrap();
+        let pubkey2 = PublicKey::from_str(&get_pubkey()[1]).unwrap();
+        assert!(connect_to_peer(connector_mock, pubkey1, pubkey2)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
@@ -865,8 +893,11 @@ mod tests {
             .expect_connect_peer()
             .returning(|_, _| Err(Status::unknown("")));
 
-        let pubkey = PublicKey::from_str(&get_pubkey()[0]).unwrap();
-        assert!(connect_to_peer(connector_mock, pubkey).await.is_err());
+        let pubkey1 = PublicKey::from_str(&get_pubkey()[0]).unwrap();
+        let pubkey2 = PublicKey::from_str(&get_pubkey()[1]).unwrap();
+        assert!(connect_to_peer(connector_mock, pubkey1, pubkey2)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

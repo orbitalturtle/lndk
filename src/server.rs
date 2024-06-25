@@ -98,6 +98,7 @@ impl Offers for LNDKServer {
             client,
             destination,
             reply_path: Some(reply_path),
+            our_node_id: PublicKey::from_str(&info.identity_pubkey).unwrap(),
         };
 
         let payment = match self.offer_handler.pay_offer(cfg).await {
