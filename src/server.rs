@@ -86,7 +86,8 @@ impl Offers for LNDKServer {
             .await
             .expect("failed to get info")
             .into_inner();
-        let network = get_network(info)
+        #[allow(deprecated)]
+        let network = get_network(&info.chains)
             .await
             .map_err(|e| Status::internal(format!("{e:?}")))?;
 

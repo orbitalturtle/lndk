@@ -20,8 +20,7 @@ use std::fmt::Display;
 use std::path::PathBuf;
 use std::{fmt, fs};
 use tonic_lnd::lnrpc::{
-    GetInfoResponse, HtlcAttempt, LightningNode, ListPeersResponse, Payment, QueryRoutesResponse,
-    Route,
+    HtlcAttempt, LightningNode, ListPeersResponse, Payment, QueryRoutesResponse, Route,
 };
 use tonic_lnd::signrpc::KeyLocator;
 use tonic_lnd::tonic::Status;
@@ -303,10 +302,10 @@ impl fmt::Display for NetworkParseError {
 }
 
 // get_network grabs what network lnd is running on from the LND API.
-pub async fn get_network(info: GetInfoResponse) -> Result<Network, ()> {
+pub async fn get_network(chains: &Vec<tonic_lnd::lnrpc::Chain>) -> Result<Network, ()> {
     let mut network_str = None;
     #[allow(deprecated)]
-    for chain in info.chains {
+    for chain in chains {
         if chain.chain == "bitcoin" {
             network_str = Some(chain.network.clone())
         }

@@ -148,7 +148,8 @@ impl LndkOnionMessenger {
             .await
             .expect("failed to get info")
             .into_inner();
-        let network = get_network(info.clone()).await?;
+        #[allow(deprecated)]
+        let network = get_network(&info.chains).await?;
 
         let pubkey = PublicKey::from_str(&info.identity_pubkey).unwrap();
         info!("Starting lndk on {network} network for node: {pubkey}.");
