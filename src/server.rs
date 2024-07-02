@@ -5,15 +5,16 @@ use crate::{
     TLS_KEY_FILENAME,
 };
 use bitcoin::secp256k1::PublicKey;
+use lightning::blinded_path::BlindedPath;
 use lightning::ln::channelmanager::PaymentId;
-use lightning::offers::invoice::Bolt12Invoice;
+use lightning::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use lightning::offers::offer::Offer;
 use lightning::sign::EntropySource;
 use lightning::util::ser::Writeable;
 use lndkrpc::offers_server::Offers;
 use lndkrpc::{
-    GetInvoiceRequest, GetInvoiceResponse, PayInvoiceRequest, PayInvoiceResponse, PayOfferRequest,
-    PayOfferResponse,
+    Bolt12InvoiceRequest, FeatureBit, GetInvoiceRequest, GetInvoiceResponse, PayInvoiceRequest,
+    PayInvoiceResponse, PayOfferRequest, PayOfferResponse,
 };
 use rcgen::{generate_simple_self_signed, CertifiedKey, Error as RcgenError};
 use std::error::Error;
@@ -205,15 +206,110 @@ impl Offers for LNDKServer {
             active_payments.remove(&payment_id);
         }
 
-        let mut buffer = Vec::new();
-        {
-            invoice
-                .write(&mut buffer)
-                .map_err(|e| Status::internal(format!("Error serializing invoice: {e}")))?
+        // Conversion function for PublicKey
+        fn convert_public_key(native_pub_key: PublicKey) -> lndkrpc::PublicKey {
+            let pub_key_bytes = native_pub_key.encode();
+            lndkrpc::PublicKey { key: pub_key_bytes }
         }
 
+        fn feature_bit_from_id(feature_id: u8) -> Option<FeatureBit> {
+            match feature_id {
+                0 => Some(FeatureBit::DatalossProtectOpt),
+                1 => Some(FeatureBit::DatalossProtectOpt),
+                3 => Some(FeatureBit::InitialRouingSync),
+                4 => Some(FeatureBit::UpfrontShutdownScriptReq),
+                5 => Some(FeatureBit::UpfrontShutdownScriptOpt),
+                6 => Some(FeatureBit::GossipQueriesReq),
+                7 => Some(FeatureBit::GossipQueriesOpt),
+                8 => Some(FeatureBit::TlvOnionReq),
+                9 => Some(FeatureBit::TlvOnionOpt),
+                10 => Some(FeatureBit::ExtGossipQueriesReq),
+                11 => Some(FeatureBit::ExtGossipQueriesOpt),
+                12 => Some(FeatureBit::StaticRemoteKeyReq),
+                13 => Some(FeatureBit::StaticRemoteKeyOpt),
+                14 => Some(FeatureBit::PaymentAddrReq),
+                15 => Some(FeatureBit::PaymentAddrOpt),
+                16 => Some(FeatureBit::MppReq),
+                17 => Some(FeatureBit::MppOpt),
+                18 => Some(FeatureBit::WumboChannelsReq),
+                19 => Some(FeatureBit::WumboChannelsOpt),
+                20 => Some(FeatureBit::AnchorsReq),
+                21 => Some(FeatureBit::AnchorsOpt),
+                22 => Some(FeatureBit::AnchorsZeroFeeHtlcReq),
+                23 => Some(FeatureBit::AnchorsZeroFeeHtlcOpt),
+                30 => Some(FeatureBit::AmpReq),
+                31 => Some(FeatureBit::AmpOpt),
+                _ => None,
+            }
+        }
+
+        fn convert_features(features: Vec<u8>) -> Vec<i32> {
+            features
+                .iter()
+                .filter_map(|&feature_id| feature_bit_from_id(feature_id))
+                .map(|feature_bit| feature_bit as i32) // Cast enum variant to i32
+                .collect()
+        }
+
+        // Conversion function for BlindedPayInfo
+        fn convert_blinded_pay_info(native_info: &BlindedPayInfo) -> lndkrpc::BlindedPayInfo {
+            lndkrpc::BlindedPayInfo {
+                fee_base_msat: native_info.fee_base_msat,
+                fee_proportional_millionths: native_info.fee_proportional_millionths,
+                cltv_expiry_delta: native_info.cltv_expiry_delta as u32,
+                htlc_minimum_msat: native_info.htlc_minimum_msat,
+                htlc_maximum_msat: native_info.htlc_maximum_msat,
+                features: convert_features(native_info.features.clone().encode()),
+            }
+        }
+
+        // Conversion function for BlindedPath
+        fn convert_blinded_path(native_info: &BlindedPath) -> lndkrpc::BlindedPath {
+            lndkrpc::BlindedPath {
+                introduction_node_id: Some(convert_public_key(native_info.introduction_node_id)),
+                blinding_point: Some(convert_public_key(native_info.blinding_point)),
+                blinded_hops: native_info
+                    .blinded_hops
+                    .iter()
+                    .map(|hop| lndkrpc::BlindedHop {
+                        blinded_node_id: Some(convert_public_key(hop.blinded_node_id)),
+                        encrypted_payload: hop.encrypted_payload.clone(),
+                    })
+                    .collect(),
+            }
+        }
+
+        let payment_paths_vec: Vec<lndkrpc::PaymentPaths> = invoice
+            .payment_paths()
+            .iter()
+            .map(|(blinded_pay_info, blinded_path)| lndkrpc::PaymentPaths {
+                blinded_pay_info: Some(convert_blinded_pay_info(blinded_pay_info)),
+                blinded_path: Some(convert_blinded_path(blinded_path)),
+            })
+            .collect();
+
+        let payment_hash = lndkrpc::PaymentHash {
+            hash: invoice.payment_hash().encode(),
+        };
+
         let reply = GetInvoiceResponse {
-            invoice: hex::encode(buffer),
+            invoice: Some(lndkrpc::Bolt12Invoice {
+                request: Some(Bolt12InvoiceRequest {
+                    amount_msats: inner_request.amount(),
+                    chain: invoice.chain().to_string(),
+                    quantity: invoice.quantity(),
+                    features: convert_features(invoice.invoice_features().clone().encode()),
+                }),
+                amount_msats: invoice.amount_msats(),
+                description: invoice.description().to_string(),
+                payment_hash: Some(payment_hash),
+                created_at: invoice.created_at().as_secs() as i64,
+                relative_expiry: invoice.relative_expiry().as_secs(),
+                node_id: Some(convert_public_key(invoice.signing_pubkey())),
+                signature: invoice.signature().to_string(),
+                payment_paths: payment_paths_vec,
+                features: convert_features(invoice.invoice_features().clone().encode()),
+            }),
         };
 
         Ok(Response::new(reply))
