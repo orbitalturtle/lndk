@@ -20,6 +20,10 @@ impl PeerRecord {
             remaining_calls,
         }
     }
+
+    pub(crate) fn onion_support(&self) -> bool {
+        self.onion_support
+    }
 }
 
 /// RateLimiter provides peer tracking and rate limiting for lightning peers.
