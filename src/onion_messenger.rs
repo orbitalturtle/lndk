@@ -664,6 +664,25 @@ async fn consume_messenger_events(
             }
             MessengerEvents::SendOutgoing => {
                 for (peer, _) in rate_limiter.peers() {
+                    // If our local state says the peer we're sending a message to doesn't
+                    // support onion messaging, we might need to give the onion messenger
+                    // a little time to update its state.
+                    let onion_support_timeout = 5;
+                    match timeout(
+                        Duration::from_secs(onion_support_timeout),
+                        check_onion_status(rate_limiter, &peer),
+                    )
+                    .await
+                    {
+                        Ok(_) => {}
+                        Err(_) => {
+                            warn!(
+                                "Onion support status did not turn to true in {} seconds.",
+                                onion_support_timeout
+                            );
+                        }
+                    };
+
                     if let Some(msg) = onion_messenger.next_onion_message_for_peer(peer) {
                         info!("Sending outgoing onion message to {peer}.");
                         relay_outgoing_msg_event(&peer, msg, message_sender).await;
@@ -677,6 +696,17 @@ async fn consume_messenger_events(
     }
 
     Ok(())
+}
+
+async fn check_onion_status(rate_limiter: &mut impl RateLimiter, pubkey: &PublicKey) {
+    loop {
+        if let Some(record) = rate_limiter.peers().get(pubkey) {
+            if record.onion_support() {
+                return;
+            }
+        };
+        sleep(Duration::from_millis(500)).await;
+    }
 }
 
 #[async_trait]
