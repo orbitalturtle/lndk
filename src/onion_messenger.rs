@@ -223,7 +223,7 @@ impl LndkOnionMessenger {
         // to finish if any producing thread exits (because we're no longer receiving the
         // events we need).
         let rate_limiter = &mut TokenLimiter::new(
-            current_peers.keys().copied(),
+            current_peers,
             DEFAULT_CALL_COUNT,
             DEFAULT_CALL_FREQUENCY,
             TokioClock::new(),
@@ -644,7 +644,7 @@ async fn consume_messenger_events(
                 // In addition to keeping the onion messenger up to date with the latest peers, we
                 // need to keep our local version up to date so we send outgoing OMs
                 // all of our peers.
-                rate_limiter.peer_connected(pubkey);
+                rate_limiter.peer_connected(pubkey, onion_support);
             }
             MessengerEvents::PeerDisconnected(pubkey) => {
                 onion_messenger.peer_disconnected(&pubkey);
@@ -663,7 +663,7 @@ async fn consume_messenger_events(
                 onion_messenger.handle_onion_message(&pubkey, &onion_message)
             }
             MessengerEvents::SendOutgoing => {
-                for peer in rate_limiter.peers() {
+                for (peer, _) in rate_limiter.peers() {
                     if let Some(msg) = onion_messenger.next_onion_message_for_peer(peer) {
                         info!("Sending outgoing onion message to {peer}.");
                         relay_outgoing_msg_event(&peer, msg, message_sender).await;
@@ -772,6 +772,7 @@ async fn relay_outgoing_msg_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rate_limit::PeerRecord;
     use crate::tests::test_utils::pubkey;
     use bitcoin::network::constants::Network;
     use bitcoin::secp256k1::PublicKey;
@@ -861,9 +862,9 @@ mod tests {
         RateLimiter{}
 
         impl RateLimiter for RateLimiter{
-            fn peer_connected(&mut self, peer_key: PublicKey);
+            fn peer_connected(&mut self, peer_key: PublicKey, onion_support: bool);
             fn peer_disconnected(&mut self, peer_key: PublicKey);
-            fn peers(&self) -> Vec<PublicKey>;
+            fn peers(&self) -> HashMap<PublicKey, PeerRecord>;
             fn query_peer(&mut self, peer_key: PublicKey) -> bool;
         }
     }
@@ -880,7 +881,7 @@ mod tests {
 
         // Setup rate limiter to no-op on peer connected / disconnected calls (we have proper
         // assertions for the onion messenger's calls anyway).
-        rate_limiter.expect_peer_connected().returning(|_| {});
+        rate_limiter.expect_peer_connected().returning(|_, _| {});
         rate_limiter.expect_peer_disconnected().returning(|_| {});
 
         // Peer connected: onion messaging supported.
@@ -897,9 +898,12 @@ mod tests {
         sender.send(MessengerEvents::SendOutgoing).await.unwrap();
         sender.send(MessengerEvents::SendOutgoing).await.unwrap();
 
-        rate_limiter
-            .expect_peers()
-            .returning(move || vec![pk_1.clone(), pk_2.clone()]);
+        rate_limiter.expect_peers().returning(move || {
+            HashMap::from([
+                (pk_1.clone(), PeerRecord::new(true, false, 100)),
+                (pk_2.clone(), PeerRecord::new(true, false, 100)),
+            ])
+        });
 
         // Set up our mock to return an onion message for pk_1, and no onion messages for pk_2.
         mock.expect_next_onion_message_for_peer()
