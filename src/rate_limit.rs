@@ -6,15 +6,17 @@ use tokio::time::{Duration, Instant};
 
 /// PeerRecord holds information about a peer that we are (or have been) connected to.
 #[derive(Copy, Clone)]
-struct PeerRecord {
+pub(crate) struct PeerRecord {
     online: bool,
+    onion_support: bool,
     remaining_calls: u8,
 }
 
 impl PeerRecord {
-    fn new(online: bool, remaining_calls: u8) -> Self {
+    pub(crate) fn new(online: bool, onion_support: bool, remaining_calls: u8) -> Self {
         PeerRecord {
             online,
+            onion_support,
             remaining_calls,
         }
     }
@@ -22,9 +24,9 @@ impl PeerRecord {
 
 /// RateLimiter provides peer tracking and rate limiting for lightning peers.
 pub(crate) trait RateLimiter {
-    fn peer_connected(&mut self, peer_key: PublicKey);
+    fn peer_connected(&mut self, peer_key: PublicKey, onion_support: bool);
     fn peer_disconnected(&mut self, peer_key: PublicKey);
-    fn peers(&self) -> Vec<PublicKey>;
+    fn peers(&self) -> HashMap<PublicKey, PeerRecord>;
     fn query_peer(&mut self, peer_key: PublicKey) -> bool;
 }
 
@@ -54,14 +56,15 @@ impl<C: Clock> TokenLimiter<C> {
     /// new creates a TokenLimiter initialized with the clock's current time and loads the set of
     /// peers provided with each allocated call_count hits for the current period.
     pub(crate) fn new(
-        peers: impl Iterator<Item = PublicKey>,
+        // A hashmap mapping keys to whether they support onion messaging.
+        peers: HashMap<PublicKey, bool>,
         call_count: u8,
         call_frequency: Duration,
         clock: C,
     ) -> Self {
         let mut peer_map: HashMap<PublicKey, PeerRecord> = HashMap::new();
-        for peer in peers {
-            peer_map.insert(peer, PeerRecord::new(true, call_count));
+        for (peer, onion_support) in peers {
+            peer_map.insert(peer, PeerRecord::new(true, onion_support, call_count));
         }
 
         let last_update = clock.now();
@@ -120,11 +123,11 @@ impl<C: Clock> RateLimiter for TokenLimiter<C> {
     /// peer_connected updates the TokenLimiter's internal peer_map to indicate that a peer is
     /// online. If it is already present in the map, its online state is updated. New peers are
     /// added to the map with a fresh allocation of calls.
-    fn peer_connected(&mut self, peer_key: PublicKey) {
+    fn peer_connected(&mut self, peer_key: PublicKey, onion_support: bool) {
         self.peer_map
             .entry(peer_key)
             .and_modify(|e| e.online = true)
-            .or_insert(PeerRecord::new(true, self.call_count));
+            .or_insert(PeerRecord::new(true, onion_support, self.call_count));
     }
 
     /// peer_disconnected updates the TokenLimiter's internal state to reflect that a peer is
@@ -136,13 +139,12 @@ impl<C: Clock> RateLimiter for TokenLimiter<C> {
     }
 
     /// peers returns the public keys of currently online peers.
-    fn peers(&self) -> Vec<PublicKey> {
+    fn peers(&self) -> HashMap<PublicKey, PeerRecord> {
         self.peer_map
             .clone()
             .into_iter()
             .filter(|p| p.1.online)
-            .map(|p| p.0)
-            .collect::<Vec<PublicKey>>()
+            .collect::<HashMap<PublicKey, PeerRecord>>()
     }
 
     /// query_peer returns a boolean indicating whether a peer has any calls of the rate limited
@@ -186,17 +188,24 @@ mod tests {
         clock.expect_now().returning(|| Instant::now());
 
         // Assert that we're set up with our original peer.
-        let mut rate_limiter =
-            TokenLimiter::new(vec![pk_0].into_iter(), TEST_COUNT, TEST_FREQUENCY, clock);
-        assert_eq!(rate_limiter.peers(), vec![pk_0]);
+        let mut rate_limiter = TokenLimiter::new(
+            HashMap::from([(pk_0, false)]),
+            TEST_COUNT,
+            TEST_FREQUENCY,
+            clock,
+        );
+
+        assert!(rate_limiter.peers().contains_key(&pk_0));
 
         // Connect a new peer and assert that both are reported.
-        rate_limiter.peer_connected(pk_1);
-        assert_eq!(rate_limiter.peers().sort(), vec![pk_0, pk_1].sort());
+        rate_limiter.peer_connected(pk_1, false);
+        assert!(rate_limiter.peers().contains_key(&pk_0));
+        assert!(rate_limiter.peers().contains_key(&pk_1));
 
         // Disconnect our original peer and assert that it's no longer listed.
         rate_limiter.peer_disconnected(pk_0);
-        assert_eq!(rate_limiter.peers(), vec![pk_1]);
+        assert!(!rate_limiter.peers().contains_key(&pk_0));
+        assert!(rate_limiter.peers().contains_key(&pk_1));
     }
 
     #[test]
@@ -211,9 +220,13 @@ mod tests {
         clock.expect_now().returning(move || start_time);
 
         // Assert that we're set up with our original peer.
-        let mut rate_limiter =
-            TokenLimiter::new(vec![pk_0].into_iter(), TEST_COUNT, TEST_FREQUENCY, clock);
-        assert_eq!(rate_limiter.peers(), vec![pk_0]);
+        let mut rate_limiter = TokenLimiter::new(
+            HashMap::from([(pk_0, false)]),
+            TEST_COUNT,
+            TEST_FREQUENCY,
+            clock,
+        );
+        assert!(rate_limiter.peers().contains_key(&pk_0));
 
         // Exhaust our allowed call count in this period, then assert that we're no longer allowed
         // to query further.
@@ -224,11 +237,11 @@ mod tests {
 
         // Connect a new peer, use some calls, then flip our connection off and on and assert that
         // they aren't allowed more calls by virtue of having disconnected.
-        rate_limiter.peer_connected(pk_1);
+        rate_limiter.peer_connected(pk_1, false);
         assert!(rate_limiter.query_peer(pk_1));
 
         rate_limiter.peer_disconnected(pk_1);
-        rate_limiter.peer_connected(pk_1);
+        rate_limiter.peer_connected(pk_1, false);
 
         assert!(rate_limiter.query_peer(pk_1));
         assert!(!rate_limiter.query_peer(pk_1));
@@ -252,7 +265,7 @@ mod tests {
 
         // When we reconnect a previously disconnected peer, they should once again have access to
         // the full quota of calls.
-        rate_limiter.peer_connected(pk_1);
+        rate_limiter.peer_connected(pk_1, false);
         for _ in 0..TEST_COUNT {
             assert!(rate_limiter.query_peer(pk_1));
         }
@@ -268,8 +281,7 @@ mod tests {
         let start_time = Instant::now();
         clock.expect_now().returning(move || start_time);
 
-        let mut rate_limiter =
-            TokenLimiter::new(vec![].into_iter(), TEST_COUNT, TEST_FREQUENCY, clock);
+        let mut rate_limiter = TokenLimiter::new(HashMap::new(), TEST_COUNT, TEST_FREQUENCY, clock);
 
         assert!(!rate_limiter.query_peer(pk_0));
     }
