@@ -48,7 +48,7 @@ pub enum OfferError<Secp256k1Error> {
     /// Unable to connect to peer.
     PeerConnectError(Status),
     /// No node address.
-    NodeAddressNotFound,
+    NodeAddressNotFound(PublicKey),
     /// Cannot list peers.
     ListPeersFailure(Status),
     /// Failure to build a reply path.
@@ -81,7 +81,7 @@ impl Display for OfferError<Secp256k1Error> {
                 "LNDK doesn't yet support offer currencies other than bitcoin"
             ),
             OfferError::PeerConnectError(e) => write!(f, "Error connecting to peer: {e:?}"),
-            OfferError::NodeAddressNotFound => write!(f, "Couldn't get node address"),
+            OfferError::NodeAddressNotFound(node_id) => write!(f, "Couldn't find node address for node_id: {node_id}"),
             OfferError::ListPeersFailure(e) => write!(f, "Error listing peers: {e:?}"),
             OfferError::BuildBlindedPathFailure => write!(f, "Error building blinded path"),
             OfferError::RouteFailure(e) => write!(f, "Error routing payment: {e:?}"),
@@ -143,9 +143,12 @@ impl OfferHandler {
             reply_path,
         };
 
-        let mut pending_messages = self.pending_messages.lock().unwrap();
-        pending_messages.push(pending_message);
-        std::mem::drop(pending_messages);
+        {
+            debug!("Adding invoice request to pending messages.");
+            let mut pending_messages = self.pending_messages.lock().unwrap();
+            pending_messages.push(pending_message);
+            std::mem::drop(pending_messages);
+        }
 
         Ok(())
     }
@@ -400,11 +403,11 @@ pub async fn connect_to_peer(
 
     let node = match node {
         Some(node) => node,
-        None => return Err(OfferError::NodeAddressNotFound),
+        None => return Err(OfferError::NodeAddressNotFound(node_id)),
     };
 
     if node.addresses.is_empty() {
-        return Err(OfferError::NodeAddressNotFound);
+        return Err(OfferError::NodeAddressNotFound(node_id));
     }
 
     connector

@@ -104,15 +104,18 @@ impl Offers for LNDKServer {
                 log::info!("Payment succeeded.");
                 payment
             }
-            Err(e) => match e {
-                OfferError::InvalidAmount(e) => {
-                    return Err(Status::invalid_argument(e.to_string()))
+            Err(e) => {
+                log::debug!("Error paying for offer: {e:?}");
+                match e {
+                    OfferError::InvalidAmount(e) => {
+                        return Err(Status::invalid_argument(e.to_string()))
+                    }
+                    OfferError::InvalidCurrency => {
+                        return Err(Status::invalid_argument(format!("{e}")))
+                    }
+                    _ => return Err(Status::internal(format!("Internal error: {e}"))),
                 }
-                OfferError::InvalidCurrency => {
-                    return Err(Status::invalid_argument(format!("{e}")))
-                }
-                _ => return Err(Status::internal(format!("Internal error: {e}"))),
-            },
+            }
         };
 
         let reply = PayOfferResponse {

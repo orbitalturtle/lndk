@@ -5,7 +5,7 @@ use std::marker::Copy;
 use tokio::time::{Duration, Instant};
 
 /// PeerRecord holds information about a peer that we are (or have been) connected to.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct PeerRecord {
     online: bool,
     onion_support: bool,
@@ -128,6 +128,7 @@ impl<C: Clock> RateLimiter for TokenLimiter<C> {
     /// online. If it is already present in the map, its online state is updated. New peers are
     /// added to the map with a fresh allocation of calls.
     fn peer_connected(&mut self, peer_key: PublicKey, onion_support: bool) {
+        log::debug!("Adding peer {peer_key} to rate limiter, onion support: {onion_support}");
         self.peer_map
             .entry(peer_key)
             .and_modify(|e| e.online = true)

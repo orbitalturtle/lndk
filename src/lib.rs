@@ -31,7 +31,7 @@ use lightning::onion_message::messenger::{
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::routing::gossip::NetworkGraph;
 use lightning::sign::{EntropySource, KeyMaterial};
-use log::{error, info, LevelFilter};
+use log::{debug, error, info, LevelFilter};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
 use log4rs::config::{Appender, Config as LogConfig, Logger, Root};
@@ -410,6 +410,7 @@ impl OffersMessageHandler for OfferHandler {
     }
 
     fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {
+        //debug!("RELEASING PENDING MESSAGE");
         core::mem::take(&mut self.pending_messages.lock().unwrap())
     }
 }

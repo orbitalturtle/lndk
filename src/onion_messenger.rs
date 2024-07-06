@@ -663,6 +663,7 @@ async fn consume_messenger_events(
                 onion_messenger.handle_onion_message(&pubkey, &onion_message)
             }
             MessengerEvents::SendOutgoing => {
+                //debug!("CURRENT RATE LIMITER PEERS: {:?}", rate_limiter.peers());
                 for (peer, _) in rate_limiter.peers() {
                     // If our local state says the peer we're sending a message to doesn't
                     // support onion messaging, we might need to give the onion messenger
@@ -674,7 +675,7 @@ async fn consume_messenger_events(
                     )
                     .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {},
                         Err(_) => {
                             warn!(
                                 "Onion support status did not turn to true in {} seconds.",
@@ -701,8 +702,10 @@ async fn consume_messenger_events(
 async fn check_onion_status(rate_limiter: &mut impl RateLimiter, pubkey: &PublicKey) {
     loop {
         if let Some(record) = rate_limiter.peers().get(pubkey) {
-            if record.onion_support() {
-                return;
+            if !record.onion_support() {
+                debug!("Peer {pubkey} is not showing onion support.");
+            } else {
+                return
             }
         };
         sleep(Duration::from_millis(500)).await;
