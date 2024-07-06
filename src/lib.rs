@@ -291,8 +291,11 @@ impl OfferHandler {
         )
         .await
         .map_err(|e| {
-            let mut active_payments = self.active_payments.lock().unwrap();
-            active_payments.remove(&payment_id);
+            {
+                let mut active_payments = self.active_payments.lock().unwrap();
+                active_payments.remove(&payment_id);
+                std::mem::drop(active_payments);
+            }
             e
         })?;
 
@@ -301,8 +304,11 @@ impl OfferHandler {
                 Ok(invoice) => invoice,
                 Err(_) => {
                     error!("Did not receive invoice in 100 seconds.");
-                    let mut active_payments = self.active_payments.lock().unwrap();
-                    active_payments.remove(&payment_id);
+                    {
+                        let mut active_payments = self.active_payments.lock().unwrap();
+                        active_payments.remove(&payment_id);
+                        std::mem::drop(active_payments);
+                    }
                     return Err(OfferError::InvoiceTimeout);
                 }
             };
@@ -311,6 +317,7 @@ impl OfferHandler {
             active_payments
                 .entry(payment_id)
                 .and_modify(|entry| entry.state = PaymentState::InvoiceReceived);
+            std::mem::drop(active_payments);
         }
 
         let payment_hash = invoice.payment_hash();
@@ -330,13 +337,19 @@ impl OfferHandler {
         self.pay_invoice(client_clone, params)
             .await
             .map(|payment| {
-                let mut active_payments = self.active_payments.lock().unwrap();
-                active_payments.remove(&payment_id);
+                {
+                    let mut active_payments = self.active_payments.lock().unwrap();
+                    active_payments.remove(&payment_id);
+                    std::mem::drop(active_payments);
+                }
                 payment
             })
             .map_err(|e| {
-                let mut active_payments = self.active_payments.lock().unwrap();
-                active_payments.remove(&payment_id);
+                {
+                    let mut active_payments = self.active_payments.lock().unwrap();
+                    active_payments.remove(&payment_id);
+                    std::mem::drop(active_payments);
+                }
                 e
             })
     }
@@ -351,6 +364,7 @@ impl OfferHandler {
                         return invoice;
                     }
                 };
+                std::mem::drop(active_payments);
             }
             sleep(Duration::from_secs(2)).await;
         }
@@ -377,20 +391,23 @@ impl OffersMessageHandler for OfferHandler {
                 match invoice.verify(&self.expanded_key, secp_ctx) {
                     Ok(payment_id) => {
                         info!("Successfully verified invoice for payment_id {payment_id}");
-                        let mut active_payments = self.active_payments.lock().unwrap();
-                        match active_payments.get_mut(&payment_id) {
-                            Some(pay_info) => match pay_info.invoice {
-                                Some(_) => {
-                                    error!("We already received an invoice with this payment id.")
-                                }
+                        {
+                            let mut active_payments = self.active_payments.lock().unwrap();
+                            match active_payments.get_mut(&payment_id) {
+                                Some(pay_info) => match pay_info.invoice {
+                                    Some(_) => {
+                                        error!("We already received an invoice with this payment id.")
+                                    }
+                                    None => {
+                                        pay_info.state = PaymentState::InvoiceReceived;
+                                        pay_info.invoice = Some(invoice.clone());
+                                    }
+                                },
                                 None => {
-                                    pay_info.state = PaymentState::InvoiceReceived;
-                                    pay_info.invoice = Some(invoice.clone());
+                                    error!("We received an invoice request for a payment id that we don't recognize or already paid: {payment_id:?}. We will ignore the invoice.");
                                 }
-                            },
-                            None => {
-                                error!("We received an invoice request for a payment id that we don't recognize or already paid: {payment_id:?}. We will ignore the invoice.");
                             }
+                            std::mem::drop(active_payments);
                         }
                         Some(OffersMessage::Invoice(invoice))
                     }

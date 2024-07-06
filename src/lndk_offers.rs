@@ -220,6 +220,7 @@ impl OfferHandler {
                     });
                 }
             };
+            std::mem::drop(active_payments);
         }
 
         Ok((invoice_request, payment_id, validated_amount))
@@ -303,6 +304,7 @@ impl OfferHandler {
             active_payments
                 .entry(params.payment_id)
                 .and_modify(|entry| entry.state = PaymentState::PaymentDispatched);
+            std::mem::drop(active_payments);
         }
 
         // We'll track the payment until it settles.
