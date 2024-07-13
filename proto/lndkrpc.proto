@@ -22,7 +22,8 @@ message GetInvoiceRequest {
 }
 
 message GetInvoiceResponse {
-    Bolt12Invoice invoice = 1;
+    string invoice = 1;
+    Bolt12Invoice contents = 2;
 }
 
 message PayInvoiceRequest {

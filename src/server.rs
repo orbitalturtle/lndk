@@ -292,8 +292,16 @@ impl Offers for LNDKServer {
             hash: invoice.payment_hash().encode(),
         };
 
+        let mut buffer = Vec::new();
+        {
+            invoice
+                .write(&mut buffer)
+                .map_err(|e| Status::internal(format!("Error serializing invoice: {e}")))?
+        }
+
         let reply = GetInvoiceResponse {
-            invoice: Some(lndkrpc::Bolt12Invoice {
+            invoice: hex::encode(buffer),
+            contents: Some(lndkrpc::Bolt12Invoice {
                 request: Some(Bolt12InvoiceRequest {
                     amount_msats: inner_request.amount(),
                     chain: invoice.chain().to_string(),
