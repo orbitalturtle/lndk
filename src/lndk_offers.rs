@@ -94,7 +94,7 @@ impl Display for OfferError<Secp256k1Error> {
 
 impl Error for OfferError<Secp256k1Error> {}
 
-// Decodes a bech32 string into an LDK offer.
+// Decodes a bech32 offer string into an LDK offer.
 pub fn decode(offer_str: String) -> Result<Offer, Bolt12ParseError> {
     offer_str.parse::<Offer>()
 }
