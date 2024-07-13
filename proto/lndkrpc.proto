@@ -23,7 +23,7 @@ message GetInvoiceRequest {
 
 message GetInvoiceResponse {
     string invoice = 1;
-    Bolt12Invoice contents = 2;
+    Bolt12InvoiceContents contents = 2;
 }
 
 message PayInvoiceRequest {
@@ -42,7 +42,7 @@ message Bolt12InvoiceRequest {
     repeated FeatureBit features = 4;
 }
 
-message Bolt12Invoice {
+message Bolt12InvoiceContents {
     Bolt12InvoiceRequest request = 1;
     uint64 amount_msats = 2;
     string description = 3;

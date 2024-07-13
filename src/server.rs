@@ -301,7 +301,7 @@ impl Offers for LNDKServer {
 
         let reply = GetInvoiceResponse {
             invoice: hex::encode(buffer),
-            contents: Some(lndkrpc::Bolt12Invoice {
+            contents: Some(lndkrpc::Bolt12InvoiceContents {
                 request: Some(Bolt12InvoiceRequest {
                     amount_msats: inner_request.amount(),
                     chain: invoice.chain().to_string(),
