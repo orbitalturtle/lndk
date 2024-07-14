@@ -132,6 +132,26 @@ impl Offers for LNDKServer {
         Ok(Response::new(reply))
     }
 
+    async fn decode_invoice(
+        &self,
+        request: Request<DecodeInvoiceRequest>,
+    ) -> Result<Response<Bolt12InvoiceContents>, Status> {
+        log::info!("Received a request: {:?}", request);
+        let inner_request: &DecodeInvoiceRequest = request.get_ref();
+        let invoice_string: Bolt12InvoiceString = inner_request.invoice.clone().into();
+        let invoice = match Bolt12Invoice::try_from(invoice_string) {
+            Ok(invoice) => {
+                println!("Decoded invoice: {:?}.", invoice);
+                invoice
+            }
+            Err(e) => {
+                return Err(Status::invalid_argument(e.to_string()))
+            }
+        };
+        let reply: Bolt12InvoiceContents = generate_bolt12_invoice_contents(&invoice);
+        Ok(Response::new(reply))
+    }
+
     async fn get_invoice(
         &self,
         request: Request<GetInvoiceRequest>,
