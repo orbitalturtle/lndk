@@ -35,24 +35,18 @@ message PayInvoiceResponse {
     string payment_preimage = 1;
 }
 
-message Bolt12InvoiceRequest {
-    uint64 amount_msats = 1;
-    string chain = 2;
-    optional uint64 quantity = 3;
-    repeated FeatureBit features = 4;
-}
-
 message Bolt12InvoiceContents {
-    Bolt12InvoiceRequest request = 1;
-    uint64 amount_msats = 2;
-    string description = 3;
-    PaymentHash payment_hash = 4;
-    repeated PaymentPaths payment_paths = 5;
-    int64 created_at = 6;
-    uint64 relative_expiry = 7;
-    PublicKey node_id = 8;
-    string signature = 9;
-    repeated FeatureBit features = 10;
+    string chain = 1;
+    optional uint64 quantity = 2;
+    uint64 amount_msats = 3;
+    string description = 4;
+    PaymentHash payment_hash = 5;
+    repeated PaymentPaths payment_paths = 6;
+    int64 created_at = 7;
+    uint64 relative_expiry = 8;
+    PublicKey node_id = 9;
+    string signature = 10;
+    repeated FeatureBit features = 11;
 }
 
 message PaymentHash {

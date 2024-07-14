@@ -13,7 +13,7 @@ use lightning::sign::EntropySource;
 use lightning::util::ser::Writeable;
 use lndkrpc::offers_server::Offers;
 use lndkrpc::{
-    Bolt12InvoiceContents, Bolt12InvoiceRequest, GetInvoiceRequest, GetInvoiceResponse,
+    Bolt12InvoiceContents, GetInvoiceRequest, GetInvoiceResponse, DecodeInvoiceRequest,
     PayInvoiceRequest, PayInvoiceResponse, PayOfferRequest, PayOfferResponse,
     PaymentHash, PaymentPaths, FeatureBit
 };
@@ -209,7 +209,7 @@ impl Offers for LNDKServer {
 
         let reply: GetInvoiceResponse = GetInvoiceResponse {
             invoice: encode_invoice_as_hex(&invoice)?,
-            contents: Some(generate_bolt12_invoice_contents(&invoice, &inner_request)),
+            contents: Some(generate_bolt12_invoice_contents(&invoice)),
         };
 
         Ok(Response::new(reply))
@@ -274,14 +274,10 @@ impl Offers for LNDKServer {
     }
 }
 
-fn generate_bolt12_invoice_contents(invoice: &Bolt12Invoice, invoice_request: &GetInvoiceRequest) -> lndkrpc::Bolt12InvoiceContents {
+fn generate_bolt12_invoice_contents(invoice: &Bolt12Invoice) -> lndkrpc::Bolt12InvoiceContents {
     Bolt12InvoiceContents {
-        request: Some(Bolt12InvoiceRequest {
-            amount_msats: invoice_request.amount(),
-            chain: invoice.chain().to_string(),
-            quantity: invoice.quantity(),
-            features: convert_features(invoice.invoice_features().clone().encode()),
-        }),
+        chain: invoice.chain().to_string(),
+        quantity: invoice.quantity(),
         amount_msats: invoice.amount_msats(),
         description: invoice.description().to_string(),
         payment_hash: Some(PaymentHash {
