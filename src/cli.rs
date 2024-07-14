@@ -122,9 +122,7 @@ async fn main() {
         }
         Commands::DecodeInvoice { invoice_string } => {
             println!("Decoding invoice: {invoice_string}.");
-
             let invoice_string: Bolt12InvoiceString = invoice_string.clone().into();
-
             match Bolt12Invoice::try_from(invoice_string) {
                 Ok(invoice) => {
                     println!("Decoded invoice: {:?}.", invoice);
