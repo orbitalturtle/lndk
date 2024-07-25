@@ -141,21 +141,6 @@ impl OfferHandler {
             reply_path = Some(self.create_reply_path(client.clone(), pubkey).await?)
         };
 
-        if let Some(ref reply_path) = reply_path {
-            let reply_path_intro_node_id = match reply_path.introduction_node {
-                IntroductionNode::NodeId(pubkey) => pubkey.to_string(),
-                IntroductionNode::DirectedShortChannelId(direction, scid) => {
-                    get_node_id(client.clone(), scid, direction)
-                        .await?
-                        .to_string()
-                }
-            };
-            debug!(
-                "In invoice request, we chose {} as the introduction node of the reply path",
-                reply_path_intro_node_id
-            );
-        };
-
         let contents = OffersMessage::InvoiceRequest(invoice_request);
         let pending_message = PendingOnionMessage {
             contents,
@@ -267,24 +252,33 @@ impl OfferHandler {
         }
 
         let secp_ctx = Secp256k1::new();
-        if intro_node.is_none() {
-            Ok(
-                BlindedPath::one_hop_for_message(node_id, &self.messenger_utils, &secp_ctx)
-                    .map_err(|_| {
-                        error!("Could not create blinded path.");
-                        OfferError::BuildBlindedPathFailure
-                    })?,
-            )
-        } else {
-            Ok(BlindedPath::new_for_message(
-                &[intro_node.unwrap(), node_id],
-                &self.messenger_utils,
-                &secp_ctx,
-            )
-            .map_err(|_| {
-                error!("Could not create blinded path.");
-                OfferError::BuildBlindedPathFailure
-            }))?
+        match intro_node {
+            Some(intro_node) => {
+                debug!("In invoice request, we chose {intro_node} as the introduction node of the reply
+                    path");
+                Ok(BlindedPath::new_for_message(
+                    &[intro_node, node_id],
+                    &self.messenger_utils,
+                    &secp_ctx,
+                )
+                .map_err(|_| {
+                    error!("Could not create blinded path.");
+                    OfferError::BuildBlindedPathFailure
+                }))?
+            }
+            None => {
+                debug!(
+                    "In invoice request, we chose {node_id} as the introduction node of the reply
+                    path"
+                );
+                Ok(
+                    BlindedPath::one_hop_for_message(node_id, &self.messenger_utils, &secp_ctx)
+                        .map_err(|_| {
+                            error!("Could not create blinded path.");
+                            OfferError::BuildBlindedPathFailure
+                        })?,
+                )
+            }
         }
     }
 
