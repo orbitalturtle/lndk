@@ -82,20 +82,20 @@ where
         peers: Vec<PublicKey>,
         mut destination: Destination,
     ) -> Result<OnionMessagePath, ()> {
-        let introduction_node = match destination {
-            Destination::Node(public_key) => public_key,
-            Destination::BlindedPath(path) => {
-                match path.introduction_node {
-                    IntroductionNode::NodeId(public_key) => public_key,
-                    IntroductionNode::DirectedShortChannelId(direction, ) =>
-                }
-            }
-        };
+        // let introduction_node = match destination {
+        //     Destination::Node(public_key) => public_key,
+        //     Destination::BlindedPath(path) => {
+        //         match path.introduction_node {
+        //             IntroductionNode::NodeId(public_key) => public_key,
+        //             IntroductionNode::DirectedShortChannelId(direction, ) =>
+        //         }
+        //     }
+        // };
 
-        self.1.list_peers().await.map_err(|e| {
-            error!("Could not lookup current peers: {e}.");
-            OfferError::ListPeersFailure(e)
-        })?;
+        // self.1.list_peers().await.map_err(|e| {
+        //     error!("Could not lookup current peers: {e}.");
+        //     OfferError::ListPeersFailure(e)
+        // })?;
 
         self.0.find_path(sender, peers, destination)
     }
