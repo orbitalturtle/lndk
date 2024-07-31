@@ -1,5 +1,6 @@
 use crate::clock::TokioClock;
-use crate::lnd::{features_support_onion_messages, ONION_MESSAGES_OPTIONAL};
+use crate::lnd::{features_support_onion_messages, PeerConnector, ONION_MESSAGES_OPTIONAL};
+use crate::lndk_offers::get_node_id;
 use crate::rate_limit::{RateLimiter, TokenLimiter};
 use crate::{LifecycleSignals, LndkOnionMessenger, LDK_LOGGER_NAME};
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, Signing, Verification};
 use core::ops::Deref;
 use futures::executor::block_on;
-use lightning::blinded_path::{BlindedPath, NodeIdLookUp};
+use lightning::blinded_path::{BlindedPath, IntroductionNode, NodeIdLookUp};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{Init, OnionMessage, OnionMessageHandler};
 use lightning::onion_message::messenger::{
@@ -37,8 +38,9 @@ use tonic_lnd::lnrpc::ChanInfoRequest;
 use tonic_lnd::Client;
 use tonic_lnd::{
     lnrpc::peer_event::EventType::PeerOffline, lnrpc::peer_event::EventType::PeerOnline,
-    lnrpc::CustomMessage, lnrpc::PeerEvent, lnrpc::SendCustomMessageRequest,
-    lnrpc::SendCustomMessageResponse, tonic::Status, LightningClient,
+    lnrpc::CustomMessage, lnrpc::ListPeersRequest, lnrpc::PeerEvent,
+    lnrpc::SendCustomMessageRequest, lnrpc::SendCustomMessageResponse, tonic::Status,
+    LightningClient,
 };
 use triggered::Listener;
 
@@ -64,7 +66,7 @@ const DEFAULT_CALL_FREQUENCY: Duration = Duration::from_secs(1);
 /// Once we've fully implemented a NetworkGraph we should remove this.
 pub(crate) struct LndkMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref>(
     pub(crate) DefaultMessageRouter<G, L, ES>,
-    pub(crate) LightningClient,
+    pub(crate) Client,
 )
 where
     L::Target: Logger,
@@ -82,20 +84,24 @@ where
         peers: Vec<PublicKey>,
         mut destination: Destination,
     ) -> Result<OnionMessagePath, ()> {
-        // let introduction_node = match destination {
-        //     Destination::Node(public_key) => public_key,
-        //     Destination::BlindedPath(path) => {
-        //         match path.introduction_node {
-        //             IntroductionNode::NodeId(public_key) => public_key,
-        //             IntroductionNode::DirectedShortChannelId(direction, ) =>
-        //         }
-        //     }
-        // };
+        let introduction_node = match destination {
+            Destination::Node(public_key) => public_key,
+            Destination::BlindedPath(path) => match path.introduction_node {
+                IntroductionNode::NodeId(public_key) => public_key,
+                IntroductionNode::DirectedShortChannelId(direction, scid) => {
+                    block_on(get_node_id(&self.1, scid, direction)).map_err(|e| {
+                        error!("Error getting node id: {e}.");
+                    })?
+                }
+            },
+        };
 
-        // self.1.list_peers().await.map_err(|e| {
-        //     error!("Could not lookup current peers: {e}.");
-        //     OfferError::ListPeersFailure(e)
-        // })?;
+        let req = ListPeersRequest {
+            ..Default::default()
+        };
+        block_on(self.1.clone().lightning_read_only().list_peers(req)).map_err(|e| {
+            error!("Could not lookup current peers: {e}.");
+        })?;
 
         self.0.find_path(sender, peers, destination)
     }

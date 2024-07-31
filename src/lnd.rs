@@ -7,7 +7,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1};
 use futures::executor::block_on;
-use lightning::blinded_path::BlindedPath;
+use lightning::blinded_path::{BlindedPath, Direction};
 use lightning::ln::msgs::UnsignedGossipMessage;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
@@ -404,6 +404,7 @@ pub trait PeerConnector {
     async fn list_peers(&mut self) -> Result<ListPeersResponse, Status>;
     async fn connect_peer(&mut self, node_id: String, addr: String) -> Result<(), Status>;
     async fn get_node_info(&mut self, pub_key: String) -> Result<Option<LightningNode>, Status>;
+    //async fn get_node_id(&self, scid: u64, direction: Direction) -> Result<PublicKey, OfferError>;
 }
 
 /// InvoicePayer provides a layer of abstraction over the LND API for paying for a BOLT 12 invoice.
@@ -411,7 +412,7 @@ pub trait PeerConnector {
 pub trait InvoicePayer {
     async fn query_routes(
         &mut self,
-        path: BlindedPath,
+        path: &BlindedPath,
         cltv_expiry_delta: u16,
         fee_base_msat: u32,
         fee_ppm: u32,
@@ -423,6 +424,7 @@ pub trait InvoicePayer {
         route: Route,
     ) -> Result<HtlcAttempt, Status>;
     async fn track_payment(&mut self, payment_hash: [u8; 32]) -> Result<Payment, OfferError>;
+    async fn get_node_id(&self, scid: u64, direction: Direction) -> Result<PublicKey, OfferError>;
 }
 
 #[cfg(test)]

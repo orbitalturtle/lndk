@@ -123,7 +123,7 @@ impl OfferHandler {
             Destination::BlindedPath(ref path) => match path.introduction_node {
                 IntroductionNode::NodeId(pubkey) => connect_to_peer(client.clone(), pubkey).await?,
                 IntroductionNode::DirectedShortChannelId(direction, scid) => {
-                    let pubkey = get_node_id(client.clone(), scid, direction).await?;
+                    let pubkey = get_node_id(&client.clone(), scid, direction).await?;
                     connect_to_peer(client.clone(), pubkey).await?
                 }
             },
@@ -286,7 +286,7 @@ impl OfferHandler {
     pub(crate) async fn send_payment(
         &self,
         mut payer: impl InvoicePayer + std::marker::Send + 'static,
-        params: SendPaymentParams,
+        params: SendPaymentParams<'_>,
     ) -> Result<Payment, OfferError> {
         let resp = payer
             .query_routes(
@@ -319,8 +319,8 @@ impl OfferHandler {
     }
 }
 
-pub struct SendPaymentParams {
-    pub path: BlindedPath,
+pub struct SendPaymentParams<'a> {
+    pub path: &'a BlindedPath,
     pub cltv_expiry_delta: u16,
     pub fee_base_msat: u32,
     pub fee_ppm: u32,
@@ -473,6 +473,10 @@ impl PeerConnector for Client {
             .await
             .map(|resp| resp.into_inner().node)
     }
+
+    // async fn get_node_id(&mut self) -> Result<, Status> {
+    //     get_node_id()
+    // }
 }
 
 #[async_trait]
@@ -553,7 +557,7 @@ impl SignInvoiceRequestFn for LndkSigner {
 impl InvoicePayer for Client {
     async fn query_routes(
         &mut self,
-        path: BlindedPath,
+        path: &BlindedPath,
         cltv_expiry_delta: u16,
         fee_base_msat: u32,
         fee_ppm: u32,
@@ -571,7 +575,7 @@ impl InvoicePayer for Client {
         let introduction_node = match path.introduction_node {
             IntroductionNode::NodeId(pubkey) => pubkey,
             IntroductionNode::DirectedShortChannelId(direction, scid) => {
-                match get_node_id(self.clone(), scid, direction).await {
+                match get_node_id(&self.clone(), scid, direction).await {
                     Ok(pubkey) => pubkey,
                     Err(e) => {
                         error!("{e}");
@@ -645,16 +649,21 @@ impl InvoicePayer for Client {
 
         Err(OfferError::PaymentFailure)
     }
+
+    async fn get_node_id(&self, scid: u64, direction: Direction) -> Result<PublicKey, OfferError> {
+        get_node_id(self, scid, direction).await
+    }
 }
 
 // get_node_id finds an introduction node from the scid and direction provided by a blinded path.
 pub(crate) async fn get_node_id(
-    client: Client,
+    client: &Client,
     scid: u64,
     direction: Direction,
 ) -> Result<PublicKey, OfferError> {
     let get_info_request = ChanInfoRequest { chan_id: scid };
     let channel_info = client
+        .clone()
         .lightning_read_only()
         .get_chan_info(get_info_request)
         .await
@@ -764,9 +773,10 @@ mod tests {
 
         #[async_trait]
         impl InvoicePayer for TestInvoicePayer{
-            async fn query_routes(&mut self, path: BlindedPath, cltv_expiry_delta: u16, fee_base_msat: u32, fee_ppm: u32, msats: u64) -> Result<QueryRoutesResponse, Status>;
+            async fn query_routes(&mut self, path: &BlindedPath, cltv_expiry_delta: u16, fee_base_msat: u32, fee_ppm: u32, msats: u64) -> Result<QueryRoutesResponse, Status>;
             async fn send_to_route(&mut self, payment_hash: [u8; 32], route: Route) -> Result<HtlcAttempt, Status>;
             async fn track_payment(&mut self, payment_hash: [u8; 32]) -> Result<Payment, OfferError>;
+            async fn get_node_id(&self, scid: u64, direction: Direction) -> Result<PublicKey, OfferError>;
         }
     }
 
@@ -1046,7 +1056,7 @@ mod tests {
         let handler = OfferHandler::new();
         let payment_id = PaymentId(MessengerUtilities::new().get_secure_random_bytes());
         let params = SendPaymentParams {
-            path: blinded_path,
+            path: &blinded_path,
             cltv_expiry_delta: 200,
             fee_base_msat: 1,
             fee_ppm: 0,
@@ -1070,7 +1080,7 @@ mod tests {
         let payment_id = PaymentId(MessengerUtilities::new().get_secure_random_bytes());
         let handler = OfferHandler::new();
         let params = SendPaymentParams {
-            path: blinded_path,
+            path: &blinded_path,
             cltv_expiry_delta: 200,
             fee_base_msat: 1,
             fee_ppm: 0,
@@ -1104,7 +1114,7 @@ mod tests {
         let payment_id = PaymentId(MessengerUtilities::new().get_secure_random_bytes());
         let handler = OfferHandler::new();
         let params = SendPaymentParams {
-            path: blinded_path,
+            path: &blinded_path,
             cltv_expiry_delta: 200,
             fee_base_msat: 1,
             fee_ppm: 0,
