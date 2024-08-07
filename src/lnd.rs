@@ -411,7 +411,7 @@ pub trait PeerConnector {
 pub trait InvoicePayer {
     async fn query_routes(
         &mut self,
-        path: BlindedPath,
+        path: &BlindedPath,
         cltv_expiry_delta: u16,
         fee_base_msat: u32,
         fee_ppm: u32,

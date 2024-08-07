@@ -298,7 +298,7 @@ impl OfferHandler {
     pub(crate) async fn send_payment(
         &self,
         mut payer: impl InvoicePayer + std::marker::Send + 'static,
-        params: SendPaymentParams,
+        params: SendPaymentParams<'_>,
     ) -> Result<Payment, OfferError> {
         let resp = payer
             .query_routes(
@@ -331,8 +331,8 @@ impl OfferHandler {
     }
 }
 
-pub struct SendPaymentParams {
-    pub path: BlindedPath,
+pub struct SendPaymentParams<'a> {
+    pub path: &'a BlindedPath,
     pub cltv_expiry_delta: u16,
     pub fee_base_msat: u32,
     pub fee_ppm: u32,
@@ -565,7 +565,7 @@ impl SignInvoiceRequestFn for LndkSigner {
 impl InvoicePayer for Client {
     async fn query_routes(
         &mut self,
-        path: BlindedPath,
+        path: &BlindedPath,
         cltv_expiry_delta: u16,
         fee_base_msat: u32,
         fee_ppm: u32,
@@ -776,7 +776,7 @@ mod tests {
 
         #[async_trait]
         impl InvoicePayer for TestInvoicePayer{
-            async fn query_routes(&mut self, path: BlindedPath, cltv_expiry_delta: u16, fee_base_msat: u32, fee_ppm: u32, msats: u64) -> Result<QueryRoutesResponse, Status>;
+            async fn query_routes(&mut self, path: &BlindedPath, cltv_expiry_delta: u16, fee_base_msat: u32, fee_ppm: u32, msats: u64) -> Result<QueryRoutesResponse, Status>;
             async fn send_to_route(&mut self, payment_hash: [u8; 32], route: Route) -> Result<HtlcAttempt, Status>;
             async fn track_payment(&mut self, payment_hash: [u8; 32]) -> Result<Payment, OfferError>;
         }
@@ -1076,7 +1076,7 @@ mod tests {
         let handler = OfferHandler::new();
         let payment_id = PaymentId(MessengerUtilities::new().get_secure_random_bytes());
         let params = SendPaymentParams {
-            path: blinded_path,
+            path: &blinded_path,
             cltv_expiry_delta: 200,
             fee_base_msat: 1,
             fee_ppm: 0,
@@ -1100,7 +1100,7 @@ mod tests {
         let payment_id = PaymentId(MessengerUtilities::new().get_secure_random_bytes());
         let handler = OfferHandler::new();
         let params = SendPaymentParams {
-            path: blinded_path,
+            path: &blinded_path,
             cltv_expiry_delta: 200,
             fee_base_msat: 1,
             fee_ppm: 0,
@@ -1134,7 +1134,7 @@ mod tests {
         let payment_id = PaymentId(MessengerUtilities::new().get_secure_random_bytes());
         let handler = OfferHandler::new();
         let params = SendPaymentParams {
-            path: blinded_path,
+            path: &blinded_path,
             cltv_expiry_delta: 200,
             fee_base_msat: 1,
             fee_ppm: 0,
