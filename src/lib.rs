@@ -369,52 +369,58 @@ impl OfferHandler {
         payment_id: PaymentId,
     ) -> Result<Payment, OfferError> {
         let payment_hash = invoice.payment_hash();
-        let path_info = invoice.payment_paths()[0].clone();
+        for (idx, path_info) in invoice.payment_paths().into_iter().enumerate() {
+            let params = SendPaymentParams {
+                path: &path_info.1,
+                cltv_expiry_delta: path_info.0.cltv_expiry_delta,
+                fee_base_msat: path_info.0.fee_base_msat,
+                fee_ppm: path_info.0.fee_proportional_millionths,
+                payment_hash: payment_hash.0,
+                msats: amount,
+                payment_id,
+            };
 
-        let params = SendPaymentParams {
-            path: path_info.1,
-            cltv_expiry_delta: path_info.0.cltv_expiry_delta,
-            fee_base_msat: path_info.0.fee_base_msat,
-            fee_ppm: path_info.0.fee_proportional_millionths,
-            payment_hash: payment_hash.0,
-            msats: amount,
-            payment_id,
-        };
+            let intro_node_id = match params.path.introduction_node {
+                IntroductionNode::NodeId(node_id) => Some(node_id.to_string()),
+                IntroductionNode::DirectedShortChannelId(direction, scid) => {
+                    let get_chan_info_request = ChanInfoRequest { chan_id: scid };
+                    let chan_info = client
+                        .clone()
+                        .lightning_read_only()
+                        .get_chan_info(get_chan_info_request)
+                        .await
+                        .map_err(OfferError::GetChannelInfo)?
+                        .into_inner();
+                    match direction {
+                        Direction::NodeOne => Some(chan_info.node1_pub),
+                        Direction::NodeTwo => Some(chan_info.node2_pub),
+                    }
+                }
+            };
+            debug!(
+                "Attempting to pay invoice with introduction node {:?}",
+                intro_node_id
+            );
 
-        let intro_node_id = match params.path.introduction_node {
-            IntroductionNode::NodeId(node_id) => Some(node_id.to_string()),
-            IntroductionNode::DirectedShortChannelId(direction, scid) => {
-                let get_chan_info_request = ChanInfoRequest { chan_id: scid };
-                let chan_info = client
-                    .clone()
-                    .lightning_read_only()
-                    .get_chan_info(get_chan_info_request)
-                    .await
-                    .map_err(OfferError::GetChannelInfo)?
-                    .into_inner();
-                match direction {
-                    Direction::NodeOne => Some(chan_info.node1_pub),
-                    Direction::NodeTwo => Some(chan_info.node2_pub),
+            match self.send_payment(client.clone(), params).await {
+                Ok(payment) => {
+                    let mut active_payments = self.active_payments.lock().unwrap();
+                    active_payments.remove(&payment_id);
+                    return Ok(payment);
+                }
+                Err(e) => {
+                    let mut active_payments = self.active_payments.lock().unwrap();
+                    active_payments.remove(&payment_id);
+                    if idx == invoice.payment_paths().len() - 1 {
+                        return Err(e);
+                    } else {
+                        continue;
+                    };
                 }
             }
-        };
-        debug!(
-            "Attempting to pay invoice with introduction node {:?}",
-            intro_node_id
-        );
+        }
 
-        self.send_payment(client, params)
-            .await
-            .map(|payment| {
-                let mut active_payments = self.active_payments.lock().unwrap();
-                active_payments.remove(&payment_id);
-                payment
-            })
-            .map_err(|e| {
-                let mut active_payments = self.active_payments.lock().unwrap();
-                active_payments.remove(&payment_id);
-                e
-            })
+        Err(OfferError::PaymentFailure)
     }
 
     /// wait_for_invoice waits for the offer creator to respond with an invoice.
