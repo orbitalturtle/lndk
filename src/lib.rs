@@ -15,7 +15,7 @@ use crate::lnd::{
     LndCfg, LndNodeSigner, MIN_LND_MAJOR_VER, MIN_LND_MINOR_VER, MIN_LND_PATCH_VER,
     MIN_LND_PRE_RELEASE_VER,
 };
-use crate::lndk_offers::{OfferError, SendPaymentParams};
+use crate::lndk_offers::{get_destination, OfferError, SendPaymentParams};
 use crate::onion_messenger::{LndkNodeIdLookUp, MessengerUtilities};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
@@ -271,17 +271,17 @@ pub struct PaymentInfo {
 }
 
 #[derive(Clone)]
-pub struct PayOfferParams {
+pub struct PayOfferParams<'a> {
     pub offer: Offer,
     pub amount: Option<u64>,
     pub payer_note: Option<String>,
     pub network: Network,
     pub client: Client,
-    /// The destination the offer creator provided, which we will use to send the invoice request.
-    pub destination: Destination,
+    // /// The destination the offer creator provided, which we will use to send the invoice request.
+    // pub destination: Destination,
     /// The path we will send back to the offer creator, so it knows where to send back the
     /// invoice.
-    pub reply_path: Option<BlindedPath>,
+    pub reply_path: Option<&'a BlindedPath>,
 }
 
 impl OfferHandler {
@@ -300,7 +300,7 @@ impl OfferHandler {
 
     /// Adds an offer to be paid with the amount specified. May only be called once for a single
     /// offer.
-    pub async fn pay_offer(&self, cfg: PayOfferParams) -> Result<Payment, OfferError> {
+    pub async fn pay_offer<'a>(&self, cfg: PayOfferParams<'_>) -> Result<Payment, OfferError> {
         let client_clone = cfg.client.clone();
         let (invoice, validated_amount, payment_id) = self.get_invoice(cfg).await?;
 
@@ -311,24 +311,32 @@ impl OfferHandler {
     /// Sends an invoice request and waits for an invoice to be sent back to us.
     /// Reminder that if this method returns an error after create_invoice_request is called, we
     /// *must* remove the payment_id from self.active_payments.
-    pub(crate) async fn get_invoice(
+    pub(crate) async fn get_invoice<'a>(
         &self,
-        cfg: PayOfferParams,
+        cfg: PayOfferParams<'_>,
     ) -> Result<(Bolt12Invoice, u64, PaymentId), OfferError> {
         let (invoice_request, payment_id, validated_amount) = self
             .create_invoice_request(
                 cfg.client.clone(),
-                cfg.offer.clone(),
+                &cfg.offer,
                 cfg.network,
                 cfg.amount,
                 cfg.payer_note,
             )
             .await?;
 
+        let destination = get_destination(&cfg.offer)
+            .await
+            .map_err(|e| {
+                let mut active_payments = self.active_payments.lock().unwrap();
+                active_payments.remove(&payment_id);
+                e   
+            })?;
+
         self.send_invoice_request(
-            cfg.destination.clone(),
+            destination,
             cfg.client.clone(),
-            cfg.reply_path.clone(),
+            cfg.reply_path.map(|rp| rp.clone()),
             invoice_request,
         )
         .await

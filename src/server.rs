@@ -81,11 +81,11 @@ impl Offers for LNDKServer {
             ))
         })?;
 
-        let destination = get_destination(&offer).await.map_err(|e| {
-            Status::internal(format!(
-                "Internal error: Couldn't get destination from offer: {e:?}"
-            ))
-        })?;
+        // let destination = get_destination(&offer).await.map_err(|e| {
+        //     Status::internal(format!(
+        //         "Internal error: Couldn't get destination from offer: {e:?}"
+        //     ))
+        // })?;
         let reply_path = match self
             .offer_handler
             .create_reply_path(client.clone(), self.node_id)
@@ -111,8 +111,8 @@ impl Offers for LNDKServer {
             payer_note: inner_request.payer_note.clone(),
             network,
             client,
-            destination,
-            reply_path: Some(reply_path),
+            //destination,
+            reply_path: Some(&reply_path),
         };
 
         let payment = match self.offer_handler.pay_offer(cfg).await {
@@ -176,9 +176,9 @@ impl Offers for LNDKServer {
             ))
         })?;
 
-        let destination = get_destination(&offer)
-            .await
-            .map_err(|e| Status::unavailable(format!("Couldn't find destination: {e}")))?;
+        // let destination = get_destination(&offer)
+        //     .await
+        //     .map_err(|e| Status::unavailable(format!("Couldn't find destination: {e}")))?;
         let reply_path = match self
             .offer_handler
             .create_reply_path(client.clone(), self.node_id)
@@ -204,8 +204,8 @@ impl Offers for LNDKServer {
             payer_note: inner_request.payer_note.clone(),
             network,
             client,
-            destination,
-            reply_path: Some(reply_path),
+            //destination,
+            reply_path: Some(&reply_path),
         };
 
         let (invoice, _, payment_id) = match self.offer_handler.get_invoice(cfg).await {

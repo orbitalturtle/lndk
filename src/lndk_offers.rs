@@ -160,7 +160,7 @@ impl OfferHandler {
         let contents = OffersMessage::InvoiceRequest(invoice_request);
         let pending_message = PendingOnionMessage {
             contents,
-            destination,
+            destination: destination.clone(),
             reply_path,
         };
 
@@ -176,7 +176,7 @@ impl OfferHandler {
     pub async fn create_invoice_request(
         &self,
         mut signer: impl MessageSigner + std::marker::Send + 'static,
-        offer: Offer,
+        offer: &Offer,
         network: Network,
         msats: Option<u64>,
         payer_note: Option<String>,
@@ -807,7 +807,7 @@ mod tests {
         let resp = handler
             .create_invoice_request(
                 signer_mock,
-                offer,
+                &offer,
                 Network::Regtest,
                 Some(amount),
                 Some("".to_string()),
@@ -833,7 +833,7 @@ mod tests {
         assert!(handler
             .create_invoice_request(
                 signer_mock,
-                offer,
+                &offer,
                 Network::Regtest,
                 Some(10000),
                 Some("".to_string())
@@ -862,7 +862,7 @@ mod tests {
         assert!(handler
             .create_invoice_request(
                 signer_mock,
-                offer,
+                &offer,
                 Network::Regtest,
                 Some(10000),
                 Some("".to_string())
